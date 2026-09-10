@@ -15,6 +15,9 @@ type Plugin struct {
 	Metadata Metadata
 	// Capabilities declares the optional integration points implemented by the plugin.
 	Capabilities Capabilities
+	// SchemaVersion is the plugin contract version negotiated at registration.
+	// Zero means unset (treated as legacy by the host).
+	SchemaVersion uint32
 }
 
 // Metadata describes a plugin for registry, logging, and diagnostics.
@@ -109,6 +112,8 @@ type Capabilities struct {
 	ResponseInterceptor ResponseInterceptor
 	// StreamChunkInterceptor rewrites successful HTTP stream chunks before downstream delivery.
 	StreamChunkInterceptor StreamChunkInterceptor
+	// WebSocketResponseObserver receives upstream WebSocket response events during execution.
+	WebSocketResponseObserver WebSocketResponseObserver
 	// ThinkingApplier applies validated thinking configuration to provider payloads.
 	ThinkingApplier ThinkingApplier
 	// UsagePlugin receives completed usage records.
@@ -769,6 +774,48 @@ type HostAuthSaveResponse struct {
 	Path string `json:"path"`
 }
 
+// Host affinity lookup status outcomes.
+const (
+	HostAffinityStatusBound       = "bound"
+	HostAffinityStatusUnbound     = "unbound"
+	HostAffinityStatusAmbiguous   = "ambiguous"
+	HostAffinityStatusUnsupported = "unsupported"
+)
+
+// HostAffinityLookupRequest asks the host to observe the current affinity binding for a session.
+type HostAffinityLookupRequest struct {
+	// Provider identifies the model provider (e.g., "anthropic", "openai").
+	Provider string `json:"provider"`
+	// Model identifies the requested model.
+	Model string `json:"model"`
+	// SessionID identifies the client session.
+	SessionID string `json:"session_id"`
+}
+
+// HostAffinityLookupResponse describes the observed affinity binding state for a session.
+type HostAffinityLookupResponse struct {
+	// Status reports the observation outcome ("bound", "unbound", "ambiguous", "unsupported").
+	Status string `json:"status"`
+	// AuthIndex identifies the bound credential index usable with host.auth.get_runtime when Status is "bound".
+	AuthIndex string `json:"auth_index,omitempty"`
+	// ObservedAt reports the observation timestamp.
+	ObservedAt time.Time `json:"observed_at,omitempty"`
+	// Disabled reports whether the bound credential is known to be disabled.
+	Disabled bool `json:"disabled,omitempty"`
+	// Unavailable reports whether the bound credential is currently unavailable.
+	Unavailable bool `json:"unavailable,omitempty"`
+}
+
+// HTTPWireProfile configures transport-level wire representation for plugin HTTP requests.
+type HTTPWireProfile struct {
+	// HTTP1Only forces the transport to use HTTP/1.1 and disables HTTP/2 negotiation.
+	HTTP1Only bool `json:"http1_only,omitempty"`
+	// DisableAutoCompression prevents transparent decompression and automatic Accept-Encoding injection.
+	DisableAutoCompression bool `json:"disable_auto_compression,omitempty"`
+	// HeaderProfile defines desired header-name order and exact casing on the wire.
+	HeaderProfile []string `json:"header_profile,omitempty"`
+}
+
 // HTTPRequest describes an upstream HTTP request issued through the host.
 type HTTPRequest struct {
 	// Method is the HTTP method.
@@ -779,6 +826,8 @@ type HTTPRequest struct {
 	Headers http.Header
 	// Body contains the raw request body.
 	Body []byte
+	// WireProfile specifies optional outbound HTTP wire profile settings.
+	WireProfile *HTTPWireProfile `json:"wire_profile,omitempty"`
 }
 
 // HTTPResponse describes a non-streaming host HTTP response.
@@ -946,6 +995,11 @@ type StreamChunkInterceptor interface {
 	InterceptStreamChunk(context.Context, StreamChunkInterceptRequest) (StreamChunkInterceptResponse, error)
 }
 
+// WebSocketResponseObserver observes upstream WebSocket response events received during execution.
+type WebSocketResponseObserver interface {
+	ObserveWebSocketResponseEvent(context.Context, WebSocketResponseEvent) error
+}
+
 // StreamChunkHeaderInitIndex marks the header-only stream initialization interceptor call.
 const StreamChunkHeaderInitIndex = -1
 
@@ -1087,11 +1141,24 @@ type StreamChunkInterceptRequest struct {
 	RequestedModel  string
 	RequestHeaders  http.Header
 	ResponseHeaders http.Header
+	// OriginalRequest contains the raw client request body.
+	// Always populated on header-init (ChunkIndex == StreamChunkHeaderInitIndex), as a fresh clone.
+	// On payload chunks (ChunkIndex >= 0):
+	//   - schema_version >= 3: omitted (nil); cache from header-init or request intercept hooks
+	//   - schema_version < 3: populated as a fresh clone each call (legacy compatibility)
+	// Callers must treat this slice as read-only; hosts clone before delivery to keep snapshots isolated.
 	OriginalRequest []byte
-	RequestBody     []byte
-	Body            []byte
+	// RequestBody contains the provider/executed request payload.
+	// Same population / cloning / schema-version rules as OriginalRequest.
+	RequestBody []byte
+	Body        []byte
 	// HistoryChunks contains a bounded recent history of chunks already delivered downstream.
 	// The host currently retains at most 64 chunks and 1 MiB total history bytes.
+	// Always preserved on header-init (ChunkIndex == StreamChunkHeaderInitIndex) when non-empty.
+	// On payload chunks (ChunkIndex >= 0):
+	//   - schema_version >= 5: omitted (nil) to avoid per-chunk cloning and serialization
+	//   - schema_version < 5: populated as a fresh clone each call (legacy compatibility)
+	// Callers must treat these slices as read-only; hosts clone before delivery to keep snapshots isolated.
 	HistoryChunks [][]byte
 	// ChunkIndex starts at 0 for payload chunks. StreamChunkHeaderInitIndex marks the header-only initialization call.
 	ChunkIndex int
@@ -1110,6 +1177,22 @@ type StreamChunkInterceptResponse struct {
 	// DropChunk skips delivery of the current payload chunk and prevents it from entering HistoryChunks.
 	// Header updates returned with DropChunk still apply to the interceptor chain state.
 	DropChunk bool
+}
+
+// WebSocketResponseEvent describes an upstream WebSocket response event received during execution.
+type WebSocketResponseEvent struct {
+	RequestID      string
+	TraceID        string
+	SourceFormat   string
+	Model          string
+	RequestedModel string
+	Provider       string
+	AuthID         string
+	AuthLabel      string
+	AuthType       string
+	EventType      string
+	Payload        []byte
+	Metadata       map[string]any
 }
 
 // PayloadResponse returns a transformed raw payload.
@@ -1300,6 +1383,8 @@ type ManagementResponse struct {
 	// Headers contains response headers.
 	Headers http.Header
 	// Body contains the raw response body.
+	// On schema_version >= 6, JSON bodies are returned without HTML entity escaping.
+	// On schema_version < 6, JSON response string values are HTML-escaped for legacy compatibility.
 	Body []byte
 }
 
@@ -1315,6 +1400,10 @@ type UsageRecord struct {
 	Alias string
 	// APIKey is the client API key identifier when available.
 	APIKey string
+	// SessionID identifies the session when present.
+	SessionID string
+	// ParentSessionID identifies the parent session in a hierarchy or fork.
+	ParentSessionID string
 	// AuthID identifies the selected credential.
 	AuthID string
 	// AuthIndex identifies the credential index when applicable.

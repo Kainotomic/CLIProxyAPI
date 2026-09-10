@@ -50,15 +50,8 @@ func formatGeminiClaudeCarrierValue(modelName, signature, direction, targetKind 
 }
 
 func formatClaudeSignatureValue(modelName, signature string) string {
-	// Gemini signatures are provider-native replay state. Keep them raw so an
-	// empty detached thinking block or tool_use block can round-trip through
-	// Claude Code and be recognized by the Gemini request translator.
-	if cache.GetModelGroup(modelName) == "gemini" {
-		return signature
-	}
-	if cache.SignatureCacheEnabled() {
-		return fmt.Sprintf("%s#%s", cache.GetModelGroup(modelName), signature)
-	}
+	// Provider signatures are emitted as provider-native opaque values without
+	// CPA-specific prefixes (such as claude#, gemini#, or gpt#).
 	if cache.GetModelGroup(modelName) == "claude" {
 		return decodeSignature(signature)
 	}
@@ -204,6 +197,10 @@ func ConvertAntigravityResponseToClaude(ctx context.Context, _ string, originalR
 		}
 		if params.ResponseType == 2 && !params.CurrentThinkingSigned {
 			appendThinkingSignature(signature, direction, targetKind)
+			return false
+		}
+		if direction == geminiClaudeCarrierPrevious && targetKind == geminiClaudeCarrierText {
+			cache.CacheSignatureBestEffort(ctx, modelName, "", signature)
 			return false
 		}
 		closeCurrentBlock()
@@ -573,14 +570,7 @@ func ConvertAntigravityResponseToClaudeNonStream(_ context.Context, _ string, or
 		}
 	}
 
-	contentArrayInitialized := false
-	ensureContentArray := func() {
-		if contentArrayInitialized {
-			return
-		}
-		responseJSON, _ = sjson.SetRawBytes(responseJSON, "content", []byte("[]"))
-		contentArrayInitialized = true
-	}
+	var blocks [][]byte
 
 	parts := root.Get("response.candidates.0.content.parts")
 	textBuilder := strings.Builder{}
@@ -597,10 +587,9 @@ func ConvertAntigravityResponseToClaudeNonStream(_ context.Context, _ string, or
 		if textBuilder.Len() == 0 {
 			return
 		}
-		ensureContentArray()
 		block := []byte(`{"type":"text","text":""}`)
 		block, _ = sjson.SetBytes(block, "text", textBuilder.String())
-		responseJSON, _ = sjson.SetRawBytes(responseJSON, "content.-1", block)
+		blocks = append(blocks, block)
 		textBuilder.Reset()
 	}
 
@@ -608,14 +597,13 @@ func ConvertAntigravityResponseToClaudeNonStream(_ context.Context, _ string, or
 		if thinkingBuilder.Len() == 0 && thinkingSignature == "" {
 			return
 		}
-		ensureContentArray()
 		block := []byte(`{"type":"thinking","thinking":""}`)
 		block, _ = sjson.SetBytes(block, "thinking", thinkingBuilder.String())
 		if thinkingSignature != "" {
 			sigValue := formatGeminiClaudeCarrierValue(modelName, thinkingSignature, thinkingSignatureDirection, thinkingSignatureTargetKind)
 			block, _ = sjson.SetBytes(block, "signature", sigValue)
 		}
-		responseJSON, _ = sjson.SetRawBytes(responseJSON, "content.-1", block)
+		blocks = append(blocks, block)
 		thinkingBuilder.Reset()
 		thinkingSignature = ""
 		thinkingSignatureDirection = geminiClaudeCarrierStandalone
@@ -626,10 +614,9 @@ func ConvertAntigravityResponseToClaudeNonStream(_ context.Context, _ string, or
 		if signature == "" {
 			return
 		}
-		ensureContentArray()
 		carrier := []byte(`{"type":"thinking","thinking":"","signature":""}`)
 		carrier, _ = sjson.SetBytes(carrier, "signature", formatGeminiClaudeCarrierValue(modelName, signature, direction, targetKind))
-		responseJSON, _ = sjson.SetRawBytes(responseJSON, "content.-1", carrier)
+		blocks = append(blocks, carrier)
 	}
 
 	if parts.IsArray() {
@@ -672,8 +659,7 @@ func ConvertAntigravityResponseToClaudeNonStream(_ context.Context, _ string, or
 					toolBlock, _ = sjson.SetRawBytes(toolBlock, "input", []byte(args.Raw))
 				}
 
-				ensureContentArray()
-				responseJSON, _ = sjson.SetRawBytes(responseJSON, "content.-1", toolBlock)
+				blocks = append(blocks, toolBlock)
 				hasSemanticContent = true
 				lastSemanticKind = geminiClaudeCarrierFunction
 				continue
@@ -697,6 +683,8 @@ func ConvertAntigravityResponseToClaudeNonStream(_ context.Context, _ string, or
 						thinkingSignatureDirection = geminiClaudeCarrierStandalone
 						thinkingSignatureTargetKind = geminiClaudeCarrierText
 						flushThinking()
+					} else if hasSemanticContent && lastSemanticKind == geminiClaudeCarrierText {
+						cache.CacheSignatureBestEffort(context.Background(), modelName, "", signature)
 					} else if hasSemanticContent {
 						appendSignatureCarrier(signature, geminiClaudeCarrierPrevious, lastSemanticKind)
 					} else {
@@ -719,6 +707,8 @@ func ConvertAntigravityResponseToClaudeNonStream(_ context.Context, _ string, or
 					if text.Exists() && text.String() != "" {
 						appendSignatureCarrier(signature, geminiClaudeCarrierNext, geminiClaudeCarrierText)
 						visibleSignatureCarrier = true
+					} else if hasSemanticContent && lastSemanticKind == geminiClaudeCarrierText {
+						cache.CacheSignatureBestEffort(context.Background(), modelName, "", signature)
 					} else if hasSemanticContent {
 						appendSignatureCarrier(signature, geminiClaudeCarrierPrevious, lastSemanticKind)
 					} else {
@@ -740,6 +730,10 @@ func ConvertAntigravityResponseToClaudeNonStream(_ context.Context, _ string, or
 
 	flushThinking()
 	flushText()
+
+	if len(blocks) > 0 {
+		responseJSON, _ = sjson.SetRawBytes(responseJSON, "content", translatorcommon.JoinRawArray(blocks))
+	}
 
 	stopReason := "end_turn"
 	if hasToolCall {
