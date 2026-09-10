@@ -507,7 +507,7 @@ func (e *XAIWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *cliprox
 	}
 	reporter.SetTranslatedReasoningEffort(prepared.body, e.Identifier())
 
-	wsHeaders := applyXAIWebsocketHeaders(http.Header{}, auth, token, prepared.sessionID)
+	wsHeaders := applyXAIWebsocketHeaders(ctx, http.Header{}, auth, token, prepared.sessionID, opts.Headers)
 	wsReqBody := buildXAIWebsocketRequestBody(prepared.body)
 	requestType := strings.TrimSpace(gjson.GetBytes(req.Payload, "type").String())
 	transcriptReset := strings.TrimSpace(gjson.GetBytes(wsReqBody, "previous_response_id").String()) == "" &&
@@ -583,6 +583,7 @@ func (e *XAIWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *cliprox
 		readCh = sess.activate(conn)
 	}
 
+	cliproxyexecutor.MarkUpstreamAttempt(ctx)
 	if errSend := writeCodexWebsocketMessage(sess, conn, wsReqBody); errSend != nil {
 		errSend = mapXAIWebsocketWriteError(sess, conn, errSend)
 		helps.RecordAPIWebsocketError(ctx, e.cfg, "send", errSend)
@@ -639,6 +640,7 @@ func (e *XAIWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *cliprox
 			logXAIWebsocketRequest(executionSessionID, authID, wsURL, wsReqBodyRetry)
 			recordAPIWebsocketHandshake(ctx, e.cfg, respHSRetry)
 			reporter.StartResponseTTFT()
+			cliproxyexecutor.MarkUpstreamAttempt(ctx)
 			if errSendRetry := writeCodexWebsocketMessage(sess, conn, wsReqBodyRetry); errSendRetry != nil {
 				errSendRetry = mapXAIWebsocketWriteError(sess, connRetry, errSendRetry)
 				helps.RecordAPIWebsocketError(ctx, e.cfg, "send_retry", errSendRetry)
@@ -699,6 +701,7 @@ func (e *XAIWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *cliprox
 		outputItemsByIndex := make(map[int64][]byte)
 		var outputItemsFallback [][]byte
 		responseFilter := newXAIInternalXSearchResponseFilter(prepared.filterInternalXSearch, prepared.clientDeclaredTools)
+		namespaceRestorer := newXAINamespaceRestorer(prepared.namespaceTools)
 		recordedTranscript := false
 		for {
 			if ctx != nil && ctx.Err() != nil {
@@ -745,6 +748,7 @@ func (e *XAIWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *cliprox
 			}
 			reporter.MarkFirstResponseByte()
 			helps.AppendAPIWebsocketResponse(ctx, e.cfg, payload)
+			helps.EmitWebSocketResponseEvent(ctx, opts, auth, e.Identifier(), req.Model, payload)
 
 			if wsErr, ok := parseXAIWebsocketError(payload); ok {
 				terminateReason = "upstream_error"
@@ -759,7 +763,7 @@ func (e *XAIWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *cliprox
 			}
 
 			for _, payload := range xaiNormalizeReasoningSummaryDataEvents(payload) {
-				payload = restoreXAINamespaceToolCalls(payload, prepared.namespaceTools)
+				payload = namespaceRestorer.restore(payload)
 				payload = responseFilter.apply(payload)
 				if len(payload) == 0 {
 					continue
@@ -803,12 +807,12 @@ func (e *XAIWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *cliprox
 				}
 
 				if cliproxyexecutor.DownstreamWebsocket(ctx) {
-					downstreamPayload := payload
-					downstreamWarmupCompletedPayload := warmupCompletedPayload
+					downstreamPayload := helps.EnsureResponsesUsageDetails(payload)
+					downstreamWarmupCompletedPayload := helps.EnsureResponsesUsageDetails(warmupCompletedPayload)
 					if idMapper != nil {
-						downstreamPayload = idMapper.downstreamResponsePayload(payload)
+						downstreamPayload = idMapper.downstreamResponsePayload(downstreamPayload)
 						if len(warmupCompletedPayload) > 0 {
-							downstreamWarmupCompletedPayload = idMapper.downstreamResponsePayload(warmupCompletedPayload)
+							downstreamWarmupCompletedPayload = idMapper.downstreamResponsePayload(downstreamWarmupCompletedPayload)
 						}
 					}
 					if !send(cliproxyexecutor.StreamChunk{Payload: downstreamPayload}) {
@@ -866,23 +870,52 @@ func (e *XAIWebsocketsExecutor) executeCompactionTriggerFromWebsocketContext(ctx
 		return nil, statusErr{code: http.StatusBadRequest, msg: "xai websocket compaction context is unavailable"}
 	}
 	transcriptInput := idMapper.state.snapshotTranscriptInput()
-	if len(transcriptInput) == 0 {
-		return nil, statusErr{code: http.StatusBadRequest, msg: "xai websocket compaction context is empty"}
+	var compactPayload []byte
+	var inputItemsCount int
+	keepPreviousResponseID := false
+	if len(transcriptInput) > 0 {
+		var errBuild error
+		compactPayload, errBuild = buildXAIWebsocketCompactionPayload(req.Payload, transcriptInput)
+		if errBuild != nil {
+			return nil, errBuild
+		}
+		inputItemsCount = len(gjson.ParseBytes(transcriptInput).Array())
+	} else {
+		filteredPayload := xaiRemoveInputItemsByType(req.Payload, "compaction_trigger")
+		payloadInput := gjson.GetBytes(filteredPayload, "input")
+		if payloadInput.IsArray() && len(payloadInput.Array()) > 0 {
+			var errBuild error
+			compactPayload, errBuild = buildXAIWebsocketCompactionPayload(filteredPayload, []byte(payloadInput.Raw))
+			if errBuild != nil {
+				return nil, errBuild
+			}
+			inputItemsCount = len(payloadInput.Array())
+		} else {
+			prevID := idMapper.upstreamPreviousID
+			if prevID == "" {
+				prevID = strings.TrimSpace(gjson.GetBytes(req.Payload, "previous_response_id").String())
+			}
+			if prevID != "" {
+				keepPreviousResponseID = true
+				compactPayload = bytes.Clone(req.Payload)
+				compactPayload = xaiRemoveInputItemsByType(compactPayload, "compaction_trigger")
+				compactPayload, _ = sjson.SetBytes(compactPayload, "previous_response_id", prevID)
+			} else {
+				return nil, statusErr{code: http.StatusBadRequest, msg: "xai websocket compaction context is empty"}
+			}
+		}
 	}
 	authID := ""
 	if auth != nil {
 		authID = auth.ID
 	}
 	log.Infof(
-		"xai websockets: compact fallback session=%s auth=%s input_items=%d",
+		"xai websockets: compact fallback session=%s auth=%s input_items=%d keep_previous_response_id=%t",
 		xaiExecutionSessionID(req, opts),
 		strings.TrimSpace(authID),
-		len(gjson.ParseBytes(transcriptInput).Array()),
+		inputItemsCount,
+		keepPreviousResponseID,
 	)
-	compactPayload, err := buildXAIWebsocketCompactionPayload(req.Payload, transcriptInput)
-	if err != nil {
-		return nil, err
-	}
 	compactReq := req
 	compactReq.Payload = compactPayload
 
@@ -960,7 +993,7 @@ func xaiWebsocketGenerateFalse(payload []byte) bool {
 }
 
 func buildXAIWebsocketWarmupCompletedPayload(createdPayload []byte) []byte {
-	completed := []byte(`{"type":"response.completed","response":{"output":[],"usage":{"input_tokens":0,"output_tokens":0,"total_tokens":0}}}`)
+	completed := []byte(`{"type":"response.completed","response":{"output":[],"usage":{"input_tokens":0,"input_tokens_details":{"cached_tokens":0},"output_tokens":0,"output_tokens_details":{"reasoning_tokens":0},"total_tokens":0}}}`)
 	if sequence := gjson.GetBytes(createdPayload, "sequence_number"); sequence.Exists() {
 		completed, _ = sjson.SetBytes(completed, "sequence_number", sequence.Int()+1)
 	}
@@ -971,11 +1004,11 @@ func buildXAIWebsocketWarmupCompletedPayload(createdPayload []byte) []byte {
 			responsePayload, _ = sjson.SetRawBytes(responsePayload, "output", []byte("[]"))
 		}
 		if !gjson.GetBytes(responsePayload, "usage").Exists() {
-			responsePayload, _ = sjson.SetRawBytes(responsePayload, "usage", []byte(`{"input_tokens":0,"output_tokens":0,"total_tokens":0}`))
+			responsePayload, _ = sjson.SetRawBytes(responsePayload, "usage", []byte(`{"input_tokens":0,"input_tokens_details":{"cached_tokens":0},"output_tokens":0,"output_tokens_details":{"reasoning_tokens":0},"total_tokens":0}`))
 		}
 		completed, _ = sjson.SetRawBytes(completed, "response", responsePayload)
 	}
-	return completed
+	return helps.EnsureResponsesUsageDetails(completed)
 }
 
 func parseXAIWebsocketError(payload []byte) (error, bool) {
@@ -1048,6 +1081,9 @@ func (e *XAIWebsocketsExecutor) dialXAIWebsocket(ctx context.Context, auth *clip
 		ctx = context.Background()
 	}
 	conn, resp, err := dialer.DialContext(ctx, wsURL, headers)
+	if err != nil {
+		cliproxyexecutor.MarkUpstreamAttempt(ctx)
+	}
 	closer := newWebsocketConnectionCloser(conn)
 	if conn != nil {
 		// Avoid gorilla/websocket flate tail validation issues on some upstreams/Go versions.
@@ -1442,13 +1478,15 @@ func buildXAIResponsesWebsocketURL(httpURL string) (string, error) {
 	return parsed.String(), nil
 }
 
-func applyXAIWebsocketHeaders(headers http.Header, auth *cliproxyauth.Auth, token string, sessionID string) http.Header {
+func applyXAIWebsocketHeaders(ctx context.Context, headers http.Header, auth *cliproxyauth.Auth, token string, sessionID string, clientHeaders ...http.Header) http.Header {
 	if headers == nil {
 		headers = http.Header{}
 	}
 	headers.Set("Content-Type", "application/json")
 	if strings.TrimSpace(token) != "" {
 		headers.Set("Authorization", "Bearer "+token)
+	} else {
+		headers.Del("Authorization")
 	}
 	if sessionID != "" {
 		headers.Set("x-grok-conv-id", sessionID)
@@ -1457,7 +1495,13 @@ func applyXAIWebsocketHeaders(headers http.Header, auth *cliproxyauth.Auth, toke
 	if auth != nil {
 		attrs = auth.Attributes
 	}
-	util.ApplyCustomHeadersFromAttrs(&http.Request{Header: headers}, attrs)
+	var req *http.Request
+	if ctx != nil {
+		req = (&http.Request{Header: headers}).WithContext(ctx)
+	} else {
+		req = &http.Request{Header: headers}
+	}
+	util.ApplyCustomHeadersFromAttrs(req, attrs, clientHeaders...)
 	return headers
 }
 

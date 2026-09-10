@@ -27,11 +27,26 @@ func TestEnvelopeRoundTrip(t *testing.T) {
 }
 
 func TestMethodNamesAreStable(t *testing.T) {
-	if SchemaVersion != 2 {
-		t.Fatalf("SchemaVersion = %d, want 2", SchemaVersion)
+	if SchemaVersion != 6 {
+		t.Fatalf("SchemaVersion = %d, want 6", SchemaVersion)
+	}
+	if SchemaVersionWebSocketResponseObserver != 4 {
+		t.Fatalf("SchemaVersionWebSocketResponseObserver = %d, want 4", SchemaVersionWebSocketResponseObserver)
+	}
+	if SchemaVersionStreamChunkOmitRequestBody != 3 {
+		t.Fatalf("SchemaVersionStreamChunkOmitRequestBody = %d, want 3", SchemaVersionStreamChunkOmitRequestBody)
+	}
+	if SchemaVersionStreamChunkOmitHistory != 5 {
+		t.Fatalf("SchemaVersionStreamChunkOmitHistory = %d, want 5", SchemaVersionStreamChunkOmitHistory)
+	}
+	if SchemaVersionRawManagementResponse != 6 {
+		t.Fatalf("SchemaVersionRawManagementResponse = %d, want 6", SchemaVersionRawManagementResponse)
 	}
 	if MethodPluginRegister != "plugin.register" {
 		t.Fatalf("MethodPluginRegister = %q", MethodPluginRegister)
+	}
+	if MethodPluginQuiesce != "plugin.quiesce" {
+		t.Fatalf("MethodPluginQuiesce = %q", MethodPluginQuiesce)
 	}
 	if MethodRequestInterceptBefore != "request.intercept_before" {
 		t.Fatalf("MethodRequestInterceptBefore = %q", MethodRequestInterceptBefore)
@@ -47,6 +62,9 @@ func TestMethodNamesAreStable(t *testing.T) {
 	}
 	if MethodResponseInterceptStreamChunk != "response.intercept_stream_chunk" {
 		t.Fatalf("MethodResponseInterceptStreamChunk = %q", MethodResponseInterceptStreamChunk)
+	}
+	if MethodWebSocketResponseEvent != "websocket.response_event" {
+		t.Fatalf("MethodWebSocketResponseEvent = %q", MethodWebSocketResponseEvent)
 	}
 	if MethodHostHTTPDo != "host.http.do" {
 		t.Fatalf("MethodHostHTTPDo = %q", MethodHostHTTPDo)
@@ -77,6 +95,9 @@ func TestMethodNamesAreStable(t *testing.T) {
 	}
 	if MethodHostAuthSave != "host.auth.save" {
 		t.Fatalf("MethodHostAuthSave = %q", MethodHostAuthSave)
+	}
+	if MethodHostAffinityLookup != "host.affinity.lookup" {
+		t.Fatalf("MethodHostAffinityLookup = %q", MethodHostAffinityLookup)
 	}
 	if MethodExecutorExecuteStream != "executor.execute_stream" {
 		t.Fatalf("MethodExecutorExecuteStream = %q", MethodExecutorExecuteStream)
