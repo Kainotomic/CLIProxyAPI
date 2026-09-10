@@ -124,6 +124,9 @@ func (m *Manager) shouldRefresh(a *Auth, now time.Time) bool {
 	if !a.NextRefreshAfter.IsZero() && now.Before(a.NextRefreshAfter) {
 		return false
 	}
+	if !a.NextRefreshAfter.IsZero() {
+		return true
+	}
 	if evaluator, ok := a.Runtime.(RefreshEvaluator); ok && evaluator != nil {
 		return evaluator.ShouldRefresh(now, a)
 	}
@@ -538,7 +541,9 @@ func (m *Manager) refreshAuthForRequest(ctx context.Context, id, failedAccessTok
 		updated.Runtime = auth.Runtime
 	}
 	updated.LastRefreshedAt = now
-	updated.NextRefreshAfter = time.Time{}
+	if !updated.NextRefreshAfter.After(now) {
+		updated.NextRefreshAfter = time.Time{}
+	}
 	updated.LastError = nil
 	updated.StatusMessage = ""
 	updated.Unavailable = false
