@@ -318,7 +318,7 @@ func closeWebsocketAfterBindFailure(sess *codexWebsocketSession, conn *websocket
 		sess.detachConnection(conn, nil)
 	}
 	if errClose := closer.Close(); errClose != nil {
-		log.Errorf("websockets executor: close lifecycle bind failure connection error: %v", errClose)
+		logCodexWebsocketCloseFailure("lifecycle_bind_failure", errClose)
 	}
 }
 
@@ -491,7 +491,7 @@ func (e *CodexWebsocketsExecutor) ensureUpstreamConn(ctx context.Context, auth *
 		logCodexWebsocketDisconnected(sess.sessionID, staleAuthID, staleWSURL, "target_changed", nil)
 		if staleCloser != nil {
 			if errClose := staleCloser.Close(); errClose != nil {
-				log.Errorf("codex websockets executor: close stale websocket error: %v", errClose)
+				logCodexWebsocketCloseFailure("stale", errClose)
 			}
 		}
 		if staleLifecycle != nil {
@@ -526,7 +526,7 @@ func (e *CodexWebsocketsExecutor) ensureUpstreamConn(ctx context.Context, auth *
 		previousCloser := sess.connCloser
 		sess.connMu.Unlock()
 		if errClose := closer.Close(); errClose != nil {
-			log.Errorf("codex websockets executor: close websocket error: %v", errClose)
+			logCodexWebsocketCloseFailure("duplicate", errClose)
 		}
 		return previous, previousCloser, nil, nil
 	}
@@ -642,7 +642,7 @@ func (e *CodexWebsocketsExecutor) invalidateUpstreamConnWithNotify(sess *codexWe
 	}
 	if closer != nil {
 		if errClose := closer.Close(); errClose != nil {
-			log.Errorf("codex websockets executor: close websocket error: %v", errClose)
+			logCodexWebsocketCloseFailure("active", errClose)
 		}
 	}
 	if lifecycle != nil {
@@ -733,7 +733,7 @@ func closeCodexWebsocketSession(sess *codexWebsocketSession, reason string) {
 		logCodexWebsocketDisconnected(sessionID, authID, wsURL, reason, nil)
 		if closer != nil {
 			if errClose := closer.Close(); errClose != nil {
-				log.Errorf("codex websockets executor: close websocket error: %v", errClose)
+				logCodexWebsocketCloseFailure("session_close", errClose)
 			}
 		}
 	}
@@ -742,16 +742,47 @@ func closeCodexWebsocketSession(sess *codexWebsocketSession, reason string) {
 	}
 }
 
-func logCodexWebsocketConnected(sessionID string, authID string, wsURL string) {
-	log.Infof("codex websockets: upstream connected session=%s auth=%s url=%s", strings.TrimSpace(sessionID), strings.TrimSpace(authID), strings.TrimSpace(wsURL))
+// logCodexWebsocketConnected records an upstream connection without including
+// session IDs, auth IDs or upstream URLs.
+func logCodexWebsocketConnected(_ string, _ string, _ string) {
+	log.WithField("provider", "codex").Info("codex websockets: upstream connected")
 }
 
-func logCodexWebsocketDisconnected(sessionID string, authID string, wsURL string, reason string, err error) {
+// logCodexWebsocketDisconnected records an upstream disconnect. Identifiers and
+// URLs are omitted entirely, the reason is mapped onto a closed allowlist, and
+// the error is reduced to a structural diagnostic so raw provider text never
+// reaches the log.
+func logCodexWebsocketDisconnected(_ string, _ string, _ string, reason string, err error) {
+	status := "ok"
 	if err != nil {
-		log.Infof("codex websockets: upstream disconnected session=%s auth=%s url=%s reason=%s err=%v", strings.TrimSpace(sessionID), strings.TrimSpace(authID), strings.TrimSpace(wsURL), strings.TrimSpace(reason), err)
-		return
+		status = "error"
 	}
-	log.Infof("codex websockets: upstream disconnected session=%s auth=%s url=%s reason=%s", strings.TrimSpace(sessionID), strings.TrimSpace(authID), strings.TrimSpace(wsURL), strings.TrimSpace(reason))
+	log.WithFields(log.Fields{
+		"provider":   "codex",
+		"reason":     safeWebsocketLifecycleReason(reason),
+		"status":     status,
+		"diagnostic": safeWebsocketErrorDiagnostic(err),
+	}).Info("codex websockets: upstream disconnected")
+}
+
+// logCodexWebsocketStreamStart records the start of a stream request. The model
+// is resolved through the local model registry so the logged value is a
+// registry-owned literal rather than the client-supplied request field.
+func logCodexWebsocketStreamStart(model string) {
+	log.WithFields(log.Fields{
+		"provider": "codex",
+		"model":    safeWebsocketModel("codex", model),
+	}).Debug("codex websockets: executing stream request")
+}
+
+// logCodexWebsocketCloseFailure records a failure to close an upstream
+// connection without echoing the provider's error text.
+func logCodexWebsocketCloseFailure(stage string, err error) {
+	log.WithFields(log.Fields{
+		"provider":   "codex",
+		"stage":      safeWebsocketCloseStage(stage),
+		"diagnostic": safeWebsocketErrorDiagnostic(err),
+	}).Error("codex websockets: close upstream connection failed")
 }
 
 // CloseCodexWebsocketSessionsForAuthID closes all active Codex upstream websocket sessions
