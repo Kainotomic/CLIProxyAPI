@@ -3,6 +3,7 @@ package api
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -147,6 +148,32 @@ func TestApplyDirectPolicyTerminationPassesThroughWhenNotTerminating(t *testing.
 	c, _ := directPolicyTestContext(t, http.MethodPost, "/v1/live", nil)
 	if applyDirectPolicyTermination(c, pluginapi.RequestInterceptResponse{}) {
 		t.Fatal("non-terminating response must not terminate")
+	}
+}
+
+func TestDirectModelPolicyMiddlewareSkipsInspectionWithoutPolicies(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	server := &Server{pluginHost: pluginhost.New()}
+	oversize := bytes.Repeat([]byte("x"), directModelPolicyBodyLimit+128)
+
+	router := gin.New()
+	router.POST("/v1/live", server.directModelPolicyMiddleware("default-model"), func(c *gin.Context) {
+		body, errRead := io.ReadAll(c.Request.Body)
+		if errRead != nil {
+			c.String(http.StatusInternalServerError, errRead.Error())
+			return
+		}
+		c.String(http.StatusOK, "%d", len(body))
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/live", bytes.NewReader(oversize))
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, req)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", recorder.Code, recorder.Body.String())
+	}
+	if got, want := recorder.Body.String(), fmt.Sprintf("%d", len(oversize)); got != want {
+		t.Fatalf("downstream body length = %s, want %s", got, want)
 	}
 }
 

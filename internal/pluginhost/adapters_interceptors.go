@@ -647,6 +647,24 @@ func cloneStringMap(in map[string]string) map[string]string {
 	return out
 }
 
+// HasActivePreRoutePolicy reports whether a current plugin declares a
+// pre-routing policy. Fused policies are included: they remain active from an
+// admission perspective and CheckPreRoutePolicy will fail closed for them.
+// This lets callers skip request-body inspection when there is no policy to
+// evaluate at all.
+func (h *Host) HasActivePreRoutePolicy(skipPluginID string) bool {
+	if h == nil {
+		return false
+	}
+	skipPluginID = strings.TrimSpace(skipPluginID)
+	for _, record := range h.activeRecords() {
+		if record.id != skipPluginID && record.plugin.Capabilities.PreRoutePolicy != nil {
+			return true
+		}
+	}
+	return false
+}
+
 // CheckPreRoutePolicy applies plugin-owned pre-routing model admission. It is
 // check-only: mutations are ignored and the first termination wins.
 func (h *Host) CheckPreRoutePolicy(ctx context.Context, req pluginapi.RequestInterceptRequest) pluginapi.RequestInterceptResponse {
@@ -662,8 +680,14 @@ func (h *Host) CheckPreRoutePolicyExcept(ctx context.Context, req pluginapi.Requ
 	skipPluginID = strings.TrimSpace(skipPluginID)
 	for _, record := range h.activeRecords() {
 		policy := record.plugin.Capabilities.PreRoutePolicy
-		if policy == nil || h.isPluginFused(record.id) || record.id == skipPluginID {
+		if policy == nil || record.id == skipPluginID {
 			continue
+		}
+		// A declared policy remains an admission requirement after the plugin
+		// fuse opens. Skipping it here would turn any capability panic into a
+		// persistent allow-all bypass until the plugin reloads.
+		if h.isPluginFused(record.id) {
+			return preRoutePolicyUnavailableResponse()
 		}
 		nextReq := req
 		nextReq.Headers = cloneHeader(req.Headers)
@@ -673,18 +697,22 @@ func (h *Host) CheckPreRoutePolicyExcept(ctx context.Context, req pluginapi.Requ
 			return policy.CheckPreRoutePolicy(callCtx, callReq)
 		}, nextReq)
 		if !ok {
-			return pluginapi.RequestInterceptResponse{
-				Terminate:    true,
-				StatusCode:   http.StatusServiceUnavailable,
-				ResponseBody: []byte(`{"error":"pre-route policy unavailable"}`),
-				ResponseHeaders: http.Header{
-					"Content-Type": []string{"application/json"},
-				},
-			}
+			return preRoutePolicyUnavailableResponse()
 		}
 		if resp.Terminate {
 			return resp
 		}
 	}
 	return pluginapi.RequestInterceptResponse{}
+}
+
+func preRoutePolicyUnavailableResponse() pluginapi.RequestInterceptResponse {
+	return pluginapi.RequestInterceptResponse{
+		Terminate:    true,
+		StatusCode:   http.StatusServiceUnavailable,
+		ResponseBody: []byte(`{"error":"pre-route policy unavailable"}`),
+		ResponseHeaders: http.Header{
+			"Content-Type": []string{"application/json"},
+		},
+	}
 }

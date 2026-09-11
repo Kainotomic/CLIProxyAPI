@@ -58,6 +58,13 @@ func (s *Server) directModelPolicyMiddleware(defaultModel string) gin.HandlerFun
 			c.Next()
 			return
 		}
+		// The standard server builder installs a plugin host even when plugins
+		// are disabled or none declares a pre-route policy. Do not inspect,
+		// buffer, or reject request bodies unless a policy actually exists.
+		if !s.pluginHost.HasActivePreRoutePolicy("") {
+			c.Next()
+			return
+		}
 		// This legacy sideband spelling addresses an already-created call. It has
 		// no request model to evaluate, matching /v1/realtime/calls/:call_id.
 		if c.Request.Method == http.MethodGet && strings.TrimSpace(c.Query("call_id")) != "" {
