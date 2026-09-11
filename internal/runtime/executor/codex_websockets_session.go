@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 	log "github.com/sirupsen/logrus"
@@ -759,9 +760,9 @@ func logCodexWebsocketDisconnected(_ string, _ string, _ string, reason string, 
 	}
 	log.WithFields(log.Fields{
 		"provider":   "codex",
-		"reason":     safeWebsocketLifecycleReason(reason),
+		"reason":     helps.SafeWebsocketLifecycleReason(reason),
 		"status":     status,
-		"diagnostic": safeWebsocketErrorDiagnostic(err),
+		"diagnostic": helps.SafeWebsocketErrorDiagnostic(err),
 	}).Info("codex websockets: upstream disconnected")
 }
 
@@ -771,7 +772,7 @@ func logCodexWebsocketDisconnected(_ string, _ string, _ string, reason string, 
 func logCodexWebsocketStreamStart(model string) {
 	log.WithFields(log.Fields{
 		"provider": "codex",
-		"model":    safeWebsocketModel("codex", model),
+		"model":    helps.SafeWebsocketModel("codex", model),
 	}).Debug("codex websockets: executing stream request")
 }
 
@@ -780,8 +781,8 @@ func logCodexWebsocketStreamStart(model string) {
 func logCodexWebsocketCloseFailure(stage string, err error) {
 	log.WithFields(log.Fields{
 		"provider":   "codex",
-		"stage":      safeWebsocketCloseStage(stage),
-		"diagnostic": safeWebsocketErrorDiagnostic(err),
+		"stage":      helps.SafeWebsocketCloseStage(stage),
+		"diagnostic": helps.SafeWebsocketErrorDiagnostic(err),
 	}).Error("codex websockets: close upstream connection failed")
 }
 

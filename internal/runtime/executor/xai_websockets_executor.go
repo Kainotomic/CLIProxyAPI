@@ -1514,7 +1514,7 @@ func logXAIWebsocketRequest(_ string, _ string, _ string, payload []byte) {
 		log.WithFields(fields).Info("xai websockets: upstream request sent")
 		return
 	}
-	fields["event"] = safeWebsocketEventType(gjson.GetBytes(payload, "type").String())
+	fields["event"] = helps.SafeWebsocketEventType(gjson.GetBytes(payload, "type").String())
 	fields["generate"] = safeXAIGenerateMode(payload)
 	fields["input_items"] = len(gjson.GetBytes(payload, "input").Array())
 	log.WithFields(fields).Info("xai websockets: upstream request sent")
@@ -1533,7 +1533,7 @@ func logXAIWebsocketTerminalResponse(_ string, _ string, _ string, eventType str
 	_ = payload
 	log.WithFields(log.Fields{
 		"provider": "xai",
-		"event":    safeWebsocketEventType(eventType),
+		"event":    helps.SafeWebsocketEventType(eventType),
 	}).Info("xai websockets: upstream terminal response")
 }
 
@@ -1542,12 +1542,12 @@ func logXAIWebsocketTerminalResponse(_ string, _ string, _ string, eventType str
 // diagnostic, so raw provider text never reaches the log.
 func logXAIWebsocketDisconnected(_ string, _ string, _ string, reason string, err error) {
 	fields := log.Fields{"provider": "xai"}
-	fields["reason"] = safeWebsocketLifecycleReason(reason)
+	fields["reason"] = helps.SafeWebsocketLifecycleReason(reason)
 	fields["status"] = "ok"
 	if err != nil {
 		fields["status"] = "error"
 	}
-	fields["diagnostic"] = safeWebsocketErrorDiagnostic(err)
+	fields["diagnostic"] = helps.SafeWebsocketErrorDiagnostic(err)
 	log.WithFields(fields).Info("xai websockets: upstream disconnected")
 }
 
@@ -1566,8 +1566,8 @@ func logXAIWebsocketCompactFallback(_ string, _ string, inputItemsCount int, kee
 func logXAIWebsocketCloseFailure(stage string, err error) {
 	log.WithFields(log.Fields{
 		"provider":   "xai",
-		"stage":      safeWebsocketCloseStage(stage),
-		"diagnostic": safeWebsocketErrorDiagnostic(err),
+		"stage":      helps.SafeWebsocketCloseStage(stage),
+		"diagnostic": helps.SafeWebsocketErrorDiagnostic(err),
 	}).Error("xai websockets: close upstream connection failed")
 }
 
@@ -1584,7 +1584,7 @@ func safeXAIGenerateMode(payload []byte) string {
 		}
 		return "false"
 	}
-	return unknownLogPlaceholder
+	return "other"
 }
 
 // CloseXAIWebsocketSessionsForAuthID closes all active xAI upstream websocket sessions
