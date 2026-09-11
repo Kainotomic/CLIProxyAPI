@@ -2,12 +2,14 @@ name: pr-test-build
 
 on:
   pull_request:
+    branches: [main]
 
 permissions:
   contents: read
 
 jobs:
-  build:
+  test-build:
+    name: Go test and production build
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -17,9 +19,14 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      - name: Refresh models catalog
-        run: bash .github/scripts/refresh-model-catalogs.sh
-      - name: Build
+      - name: Validate checked-in model catalogs
         run: |
-          go build -o test-output ./cmd/server
-          rm -f test-output
+          go run ./cmd/validate_codex_models --file internal/registry/models/codex_client_models.json
+          git diff --exit-code -- internal/registry/models
+      - name: Run Go tests
+        run: go test ./...
+      - name: Build production server
+        run: go build -o test-output ./cmd/server
+      - name: Remove build output
+        if: always()
+        run: rm -f test-output
