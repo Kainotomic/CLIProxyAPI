@@ -23,8 +23,14 @@ func (h *Host) FilterModels(ctx context.Context, path string, headers http.Heade
 	current := models
 	for _, record := range h.activeRecords() {
 		filter := record.plugin.Capabilities.ModelFilter
-		if filter == nil || h.isPluginFused(record.id) {
+		if filter == nil {
 			continue
+		}
+		// A declared model filter remains an access-control requirement after
+		// the plugin fuse opens. Skipping it would expose the unfiltered native
+		// catalog to every later caller until the plugin reloads.
+		if h.isPluginFused(record.id) {
+			return nil, http.StatusServiceUnavailable, "model filter unavailable"
 		}
 		if !h.recordCurrent(record) {
 			return nil, http.StatusServiceUnavailable, "model filter unavailable"
