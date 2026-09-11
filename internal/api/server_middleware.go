@@ -2,12 +2,12 @@ package api
 
 import (
 	"bytes"
+	"encoding/json"
 	"io"
 	"net/http"
 	"strings"
 
 	"github.com/google/uuid"
-	"github.com/tidwall/gjson"
 
 	"github.com/gin-gonic/gin"
 	codexlive "github.com/router-for-me/CLIProxyAPI/v7/internal/client/codex/live"
@@ -41,6 +41,8 @@ var corsExposedResponseHeaders = []string{
 // bodies carry no model and fall back to the query/default model.
 const directModelPolicyBodyLimit = 1 << 20
 
+const directModelPolicyBodyTooLargeKey = "directModelPolicyBodyTooLarge"
+
 // directModelPolicyMiddleware applies plugin-owned model admission to direct
 // live/realtime entry points that do not enter BaseAPIHandler's execution
 // interceptor path. Those handlers select an upstream OAuth credential directly,
@@ -56,13 +58,25 @@ func (s *Server) directModelPolicyMiddleware(defaultModel string) gin.HandlerFun
 			c.Next()
 			return
 		}
+		// This legacy sideband spelling addresses an already-created call. It has
+		// no request model to evaluate, matching /v1/realtime/calls/:call_id.
+		if c.Request.Method == http.MethodGet && strings.TrimSpace(c.Query("call_id")) != "" {
+			c.Next()
+			return
+		}
 		model, ok := s.directRequestedModel(c, defaultModel)
 		if !ok {
-			c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": gin.H{
-				"message": "Invalid Realtime request body",
+			status := http.StatusBadRequest
+			message, code := "Invalid Realtime request body", "invalid_request"
+			if tooLarge, _ := c.Get(directModelPolicyBodyTooLargeKey); tooLarge == true {
+				status = http.StatusRequestEntityTooLarge
+				message, code = "Realtime request body exceeds policy inspection limit", "request_too_large"
+			}
+			c.AbortWithStatusJSON(status, gin.H{"error": gin.H{
+				"message": message,
 				"type":    "invalid_request_error",
 				"param":   nil,
-				"code":    "invalid_request",
+				"code":    code,
 			}})
 			return
 		}
@@ -73,7 +87,7 @@ func (s *Server) directModelPolicyMiddleware(defaultModel string) gin.HandlerFun
 			}
 		}
 		body := directPolicyBody(c)
-		response := s.pluginHost.InterceptRequestBeforeAuth(c.Request.Context(), pluginapi.RequestInterceptRequest{RequestID: uuid.NewString(), TraceID: logging.GetRequestID(c.Request.Context()), SourceFormat: "realtime", Model: model, RequestedModel: model, Stream: true, Headers: c.Request.Header.Clone(), Body: body, Metadata: metadata})
+		response := s.pluginHost.CheckPreRoutePolicy(c.Request.Context(), pluginapi.RequestInterceptRequest{RequestID: uuid.NewString(), TraceID: logging.GetRequestID(c.Request.Context()), SourceFormat: "realtime", Model: model, RequestedModel: model, Stream: true, Headers: c.Request.Header.Clone(), Body: body, Metadata: metadata})
 		if applyDirectPolicyTermination(c, response) {
 			return
 		}
@@ -108,17 +122,20 @@ func directPolicyBody(c *gin.Context) []byte {
 		return nil
 	}
 	body, _ := io.ReadAll(io.LimitReader(c.Request.Body, directModelPolicyBodyLimit+1))
-	c.Request.Body = io.NopCloser(bytes.NewReader(body))
+	c.Request.Body = io.NopCloser(io.MultiReader(bytes.NewReader(body), c.Request.Body))
 	return body
 }
 
 // directRequestedModel resolves the model a realtime/live request targets and
 // restores the body so the downstream handler still reads it in full.
 func (s *Server) directRequestedModel(c *gin.Context, defaultModel string) (string, bool) {
-	if model := strings.TrimSpace(c.Query("model")); model != "" {
-		return model, true
-	}
 	if c.Request == nil || c.Request.Body == nil || c.Request.Method == http.MethodGet {
+		if model := strings.TrimSpace(codexlive.ClientSecretSessionModel(directClientSecretSession(c))); model != "" {
+			return model, true
+		}
+		if model := strings.TrimSpace(c.Query("model")); model != "" {
+			return model, true
+		}
 		return defaultModel, true
 	}
 	body, errRead := io.ReadAll(io.LimitReader(c.Request.Body, directModelPolicyBodyLimit+1))
@@ -126,21 +143,35 @@ func (s *Server) directRequestedModel(c *gin.Context, defaultModel string) (stri
 		return "", false
 	}
 	if len(body) > directModelPolicyBodyLimit {
-		// Oversized bodies are rejected by the downstream handler. Replay the
-		// prefix plus the untouched remainder so that check still runs.
+		// Never authorize a default model while the downstream handler can find a
+		// different model later in a larger JSON or multipart body.
 		c.Request.Body = io.NopCloser(io.MultiReader(bytes.NewReader(body), c.Request.Body))
-		return defaultModel, true
+		c.Set(directModelPolicyBodyTooLargeKey, true)
+		return "", false
 	}
-	c.Request.Body = io.NopCloser(bytes.NewReader(body))
-	if len(bytes.TrimSpace(body)) == 0 || !gjson.ValidBytes(body) {
-		return defaultModel, true
+	c.Request.Body = io.NopCloser(io.MultiReader(bytes.NewReader(body), c.Request.Body))
+	model, errModel := codexlive.RequestedCallModel(body, c.GetHeader("Content-Type"), directClientSecretSession(c))
+	if errModel != nil {
+		return "", false
 	}
-	for _, path := range []string{"model", "session.model"} {
-		if model := strings.TrimSpace(gjson.GetBytes(body, path).String()); model != "" {
-			return model, true
-		}
+	if strings.TrimSpace(model) != "" {
+		return model, true
 	}
 	return defaultModel, true
+}
+
+// directClientSecretSession reads the realtime client-secret session stored by
+// realtimeAuthMiddleware, if this request authenticated with one.
+func directClientSecretSession(c *gin.Context) json.RawMessage {
+	if c == nil {
+		return nil
+	}
+	value, exists := c.Get(codexlive.ClientSecretSessionContextKey)
+	if !exists {
+		return nil
+	}
+	session, _ := value.(json.RawMessage)
+	return session
 }
 
 var corsExposedResponseHeadersJoined = strings.Join(corsExposedResponseHeaders, ", ")

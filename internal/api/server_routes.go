@@ -635,6 +635,9 @@ func (w *modelListCapture) WriteString(data string) (int, error) {
 	return w.Write([]byte(data))
 }
 
+// writeFilteredModelList applies the plugin model filter to a captured model
+// list response. Both native envelopes are covered: OpenAI-style "data" and
+// the Codex client / Gemini style "models" list.
 func (s *Server) writeFilteredModelList(c *gin.Context, writer gin.ResponseWriter, capture *modelListCapture) {
 	if capture == nil || writer == nil {
 		return
@@ -647,14 +650,22 @@ func (s *Server) writeFilteredModelList(c *gin.Context, writer gin.ResponseWrite
 	if s != nil && s.pluginHost != nil && statusCode >= 200 && statusCode < 300 {
 		var envelope map[string]any
 		if errDecode := json.Unmarshal(body, &envelope); errDecode == nil {
-			if rawModels, okModels := envelope["data"].([]any); okModels {
+			for _, key := range []string{"data", "models"} {
+				rawModels, okModels := envelope[key].([]any)
+				if !okModels {
+					continue
+				}
 				models := make([]map[string]any, 0, len(rawModels))
 				for _, raw := range rawModels {
 					if model, okModel := raw.(map[string]any); okModel {
 						models = append(models, model)
 					}
 				}
-				filtered, filterStatus, filterError := s.pluginHost.FilterModels(c.Request.Context(), c.Request.URL.Path, c.Request.Header.Clone(), c.Request.URL.Query(), models)
+				var accessMetadata map[string]string
+				if value, exists := c.Get("accessMetadata"); exists {
+					accessMetadata, _ = value.(map[string]string)
+				}
+				filtered, filterStatus, filterError := s.pluginHost.FilterModels(c.Request.Context(), c.Request.URL.Path, c.Request.Header.Clone(), c.Request.URL.Query(), accessMetadata, models)
 				if filterStatus != 0 {
 					statusCode = filterStatus
 					if filterError == "" {
@@ -666,11 +677,12 @@ func (s *Server) writeFilteredModelList(c *gin.Context, writer gin.ResponseWrite
 					for _, model := range filtered {
 						items = append(items, model)
 					}
-					envelope["data"] = items
+					envelope[key] = items
 					if encoded, errEncode := json.Marshal(envelope); errEncode == nil {
 						body = encoded
 					}
 				}
+				break
 			}
 		}
 	}
@@ -768,66 +780,20 @@ func formatHomeCodexModel(entry homeModelEntry) map[string]any {
 
 func (s *Server) geminiModelsHandler(geminiHandler *gemini.GeminiAPIHandler) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		if s != nil && s.cfg != nil && s.cfg.Home.Enabled {
-			s.handleHomeGeminiModels(c)
-			return
-		}
-
+		// Capture before dispatch so Home-mode responses are filtered too.
 		capture := &modelListCapture{ResponseWriter: c.Writer}
 		originalWriter := c.Writer
 		c.Writer = capture
 		defer func() {
 			c.Writer = originalWriter
-			s.writeFilteredGeminiModelList(c, originalWriter, capture)
+			s.writeFilteredModelList(c, originalWriter, capture)
 		}()
+		if s != nil && s.cfg != nil && s.cfg.Home.Enabled {
+			s.handleHomeGeminiModels(c)
+			return
+		}
 		geminiHandler.GeminiModels(c)
 	}
-}
-
-// writeFilteredGeminiModelList applies the plugin model filter to a
-// /v1beta/models response envelope ("models" list), mirroring the managed-key
-// filtering the native control plane applied to Gemini model listings.
-func (s *Server) writeFilteredGeminiModelList(c *gin.Context, writer gin.ResponseWriter, capture *modelListCapture) {
-	if capture == nil || writer == nil {
-		return
-	}
-	statusCode := capture.status
-	if statusCode == 0 {
-		statusCode = http.StatusOK
-	}
-	body := capture.body.Bytes()
-	if s != nil && s.pluginHost != nil && statusCode >= 200 && statusCode < 300 {
-		var envelope map[string]any
-		if errDecode := json.Unmarshal(body, &envelope); errDecode == nil {
-			if rawModels, okModels := envelope["models"].([]any); okModels {
-				models := make([]map[string]any, 0, len(rawModels))
-				for _, raw := range rawModels {
-					if model, okModel := raw.(map[string]any); okModel {
-						models = append(models, model)
-					}
-				}
-				filtered, filterStatus, filterError := s.pluginHost.FilterModels(c.Request.Context(), c.Request.URL.Path, c.Request.Header.Clone(), c.Request.URL.Query(), models)
-				if filterStatus != 0 {
-					statusCode = filterStatus
-					if filterError == "" {
-						filterError = http.StatusText(filterStatus)
-					}
-					body, _ = json.Marshal(gin.H{"error": filterError})
-				} else {
-					items := make([]any, 0, len(filtered))
-					for _, model := range filtered {
-						items = append(items, model)
-					}
-					envelope["models"] = items
-					if encoded, errEncode := json.Marshal(envelope); errEncode == nil {
-						body = encoded
-					}
-				}
-			}
-		}
-	}
-	writer.WriteHeader(statusCode)
-	_, _ = writer.Write(body)
 }
 
 func (s *Server) geminiGetHandler(geminiHandler *gemini.GeminiAPIHandler) gin.HandlerFunc {
@@ -883,6 +849,50 @@ func (s *Server) handleHomeModels(c *gin.Context) {
 		"object": "list",
 		"data":   filtered,
 	})
+}
+
+func (s *Server) modelListForPlugin(ctx context.Context, format string) ([]map[string]any, error) {
+	format = strings.ToLower(strings.TrimSpace(format))
+	if format == "" {
+		format = "openai"
+	}
+	if s == nil || s.cfg == nil || !s.cfg.Home.Enabled {
+		return registry.GetGlobalRegistry().GetAvailableModels(format), nil
+	}
+	client := home.Current()
+	if client == nil {
+		return nil, fmt.Errorf("home control center unavailable")
+	}
+	raw, errGet := client.GetModels(ctx, nil, nil)
+	if errGet != nil {
+		return nil, errGet
+	}
+	if statusCode, ok := homeModelsAuthStatus(raw); ok {
+		return nil, fmt.Errorf("home models returned status %d: %s", statusCode, homeModelsErrorMessage(raw))
+	}
+	entries, errDecode := decodeHomeModels(raw)
+	if errDecode != nil {
+		return nil, errDecode
+	}
+	switch format {
+	case "claude", "anthropic":
+		return formatHomeClaudeModels(entries), nil
+	case "gemini":
+		return formatHomeGeminiModels(entries), nil
+	default:
+		models := make([]map[string]any, 0, len(entries))
+		for _, entry := range entries {
+			model := map[string]any{"id": entry.id, "object": "model"}
+			if entry.created > 0 {
+				model["created"] = entry.created
+			}
+			if entry.ownedBy != "" {
+				model["owned_by"] = entry.ownedBy
+			}
+			models = append(models, model)
+		}
+		return models, nil
+	}
 }
 
 func formatHomeClaudeModels(entries []homeModelEntry) []map[string]any {

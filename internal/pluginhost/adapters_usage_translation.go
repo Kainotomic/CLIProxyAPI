@@ -163,7 +163,7 @@ func (a *usageAdapter) HandleUsage(ctx context.Context, record coreusage.Record)
 		parentSessionID = ""
 	}
 	plugin.HandleUsage(ctx, pluginapi.UsageRecord{
-		RequestID:       strings.TrimSpace(logging.GetRequestID(ctx)),
+		RequestID:       coreusage.ExecutionRequestIDFromContext(ctx),
 		Provider:        record.Provider,
 		ExecutorType:    record.ExecutorType,
 		Model:           record.Model,

@@ -615,6 +615,12 @@ func (h *BaseAPIHandler) preRouteModelPolicy(ctx context.Context, handlerType, m
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	// Entry points that must run policy before their own route preparation (for
+	// example the Responses WebSocket loop) mark the context; the policy is
+	// check-only, so evaluating it twice per request would only add latency.
+	if preRoutePolicyChecked(ctx) {
+		return nil
+	}
 	host := h.interceptorHost()
 	if host == nil {
 		return nil

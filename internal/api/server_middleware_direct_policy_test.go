@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/gin-gonic/gin"
+	codexlive "github.com/router-for-me/CLIProxyAPI/v7/internal/client/codex/live"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/pluginhost"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
@@ -28,16 +29,27 @@ func directPolicyTestContext(t *testing.T, method, target string, body []byte) (
 	return c, recorder
 }
 
-func TestDirectRequestedModelUsesQueryModel(t *testing.T) {
+func TestDirectRequestedModelIgnoresQueryModelOnPost(t *testing.T) {
+	// The downstream handler routes by the body model and never consults the
+	// query string on POST, so policy must evaluate the body model too.
 	server := &Server{}
 	c, _ := directPolicyTestContext(t, http.MethodPost, "/v1/live?model=gpt-live-1-codex", []byte(`{"model":"other"}`))
 	model, ok := server.directRequestedModel(c, "default-model")
-	if !ok || model != "gpt-live-1-codex" {
-		t.Fatalf("model = %q ok = %v, want query model", model, ok)
+	if !ok || model != "other" {
+		t.Fatalf("model = %q ok = %v, want body model", model, ok)
 	}
 	rest, _ := io.ReadAll(c.Request.Body)
 	if string(rest) != `{"model":"other"}` {
 		t.Fatalf("body not restored: %q", rest)
+	}
+}
+
+func TestDirectRequestedModelUsesQueryModelOnGet(t *testing.T) {
+	server := &Server{}
+	c, _ := directPolicyTestContext(t, http.MethodGet, "/v1/realtime?model=gpt-realtime-custom", nil)
+	model, ok := server.directRequestedModel(c, "default-model")
+	if !ok || model != "gpt-realtime-custom" {
+		t.Fatalf("model = %q ok = %v, want query model", model, ok)
 	}
 }
 
@@ -59,13 +71,15 @@ func TestDirectRequestedModelFallsBackToDefault(t *testing.T) {
 	if model, ok := server.directRequestedModel(c, "default-model"); !ok || model != "default-model" {
 		t.Fatalf("GET model = %q ok = %v, want default", model, ok)
 	}
+	// A JSON body without a model takes the live handler's own default, matching
+	// the model the handler will actually route.
 	c, _ = directPolicyTestContext(t, http.MethodPost, "/v1/live", []byte(`{"audio":"sdp-not-json"}`))
-	if model, ok := server.directRequestedModel(c, "default-model"); !ok || model != "default-model" {
-		t.Fatalf("SDP model = %q ok = %v, want default", model, ok)
+	if model, ok := server.directRequestedModel(c, "default-model"); !ok || model != codexlive.DefaultLiveModel {
+		t.Fatalf("SDP model = %q ok = %v, want handler default %q", model, ok, codexlive.DefaultLiveModel)
 	}
 	c, _ = directPolicyTestContext(t, http.MethodPost, "/v1/live", nil)
-	if model, ok := server.directRequestedModel(c, "default-model"); !ok || model != "default-model" {
-		t.Fatalf("empty body model = %q ok = %v, want default", model, ok)
+	if model, ok := server.directRequestedModel(c, "default-model"); !ok || model != codexlive.DefaultLiveModel {
+		t.Fatalf("empty body model = %q ok = %v, want handler default %q", model, ok, codexlive.DefaultLiveModel)
 	}
 }
 
@@ -77,8 +91,11 @@ func TestDirectRequestedModelReplaysOversizedBodyAndUsesDefault(t *testing.T) {
 	}
 	c, _ := directPolicyTestContext(t, http.MethodPost, "/v1/live", oversize)
 	model, ok := server.directRequestedModel(c, "default-model")
-	if !ok || model != "default-model" {
-		t.Fatalf("model = %q ok = %v, want default on oversize", model, ok)
+	if ok || model != "" {
+		t.Fatalf("model = %q ok = %v, want rejection on oversize", model, ok)
+	}
+	if tooLarge, _ := c.Get(directModelPolicyBodyTooLargeKey); tooLarge != true {
+		t.Fatal("oversized request was not marked for 413 response")
 	}
 	rest, _ := io.ReadAll(c.Request.Body)
 	if len(rest) != len(oversize) {

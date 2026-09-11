@@ -71,6 +71,7 @@ type Host struct {
 	runtimeConfig          *config.Config
 	authManager            *coreauth.Manager
 	modelExecutor          modelExecutor
+	modelListProvider      func(context.Context, string) ([]map[string]any, error)
 	modelClientIDs         map[string]struct{}
 	executorModelClientIDs map[string]struct{}
 	modelProviders         map[string]string
@@ -136,6 +137,26 @@ func (h *Host) SetModelExecutor(executor modelExecutor) {
 	h.mu.Lock()
 	h.modelExecutor = executor
 	h.mu.Unlock()
+}
+
+// SetModelListProvider supplies the active server catalog, including Home mode.
+func (h *Host) SetModelListProvider(provider func(context.Context, string) ([]map[string]any, error)) {
+	if h == nil {
+		return
+	}
+	h.mu.Lock()
+	h.modelListProvider = provider
+	h.mu.Unlock()
+}
+
+func (h *Host) currentModelListProvider() func(context.Context, string) ([]map[string]any, error) {
+	if h == nil {
+		return nil
+	}
+	h.mu.Lock()
+	provider := h.modelListProvider
+	h.mu.Unlock()
+	return provider
 }
 
 func (h *Host) currentModelExecutor() modelExecutor {
@@ -819,6 +840,11 @@ func (h *Host) removePluginRuntimeStateLocked(id string) {
 			delete(h.managementRoutes, key)
 		}
 	}
+	for key, record := range h.publicRoutes {
+		if record.pluginID == id {
+			delete(h.publicRoutes, key)
+		}
+	}
 	for key, record := range h.resourceRoutes {
 		if record.pluginID == id {
 			delete(h.resourceRoutes, key)
@@ -1061,7 +1087,10 @@ func validPlugin(plugin pluginapi.Plugin) bool {
 		caps.ThinkingApplier != nil ||
 		caps.UsagePlugin != nil ||
 		caps.CommandLinePlugin != nil ||
-		caps.ManagementAPI != nil
+		caps.ManagementAPI != nil ||
+		caps.PublicAPI != nil ||
+		caps.ModelFilter != nil ||
+		caps.PreRoutePolicy != nil
 }
 
 func typeName(v any) string {

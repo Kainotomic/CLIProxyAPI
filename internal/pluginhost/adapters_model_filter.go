@@ -16,7 +16,7 @@ func pluginPanicError(operation string, recovered any) error {
 
 // FilterModels lets the active plugin chain apply access-specific visibility to
 // a native model list. Plugins that do not own the request return Handled=false.
-func (h *Host) FilterModels(ctx context.Context, path string, headers http.Header, query url.Values, models []map[string]any) ([]map[string]any, int, string) {
+func (h *Host) FilterModels(ctx context.Context, path string, headers http.Header, query url.Values, accessMetadata map[string]string, models []map[string]any) ([]map[string]any, int, string) {
 	if h == nil {
 		return models, 0, ""
 	}
@@ -26,6 +26,9 @@ func (h *Host) FilterModels(ctx context.Context, path string, headers http.Heade
 		if filter == nil || h.isPluginFused(record.id) {
 			continue
 		}
+		if !h.recordCurrent(record) {
+			return nil, http.StatusServiceUnavailable, "model filter unavailable"
+		}
 		resp, errFilter := func() (resp pluginapi.ModelFilterResponse, err error) {
 			defer func() {
 				if recovered := recover(); recovered != nil {
@@ -33,11 +36,11 @@ func (h *Host) FilterModels(ctx context.Context, path string, headers http.Heade
 					err = pluginPanicError("ModelFilter.FilterModels", recovered)
 				}
 			}()
-			return filter.FilterModels(ctx, pluginapi.ModelFilterRequest{Path: path, Headers: headers, Query: query, Models: current})
+			return filter.FilterModels(ctx, pluginapi.ModelFilterRequest{Path: path, Headers: headers, Query: query, Models: current, AccessMetadata: accessMetadata})
 		}()
 		if errFilter != nil {
 			log.Warnf("pluginhost: model filter %s failed: %v", record.id, errFilter)
-			continue
+			return nil, http.StatusServiceUnavailable, "model filter unavailable"
 		}
 		if !resp.Handled {
 			continue
@@ -45,8 +48,9 @@ func (h *Host) FilterModels(ctx context.Context, path string, headers http.Heade
 		if resp.StatusCode != 0 && (resp.StatusCode < 200 || resp.StatusCode >= 300) {
 			return nil, resp.StatusCode, resp.Error
 		}
-		if resp.Models != nil {
-			current = resp.Models
+		current = resp.Models
+		if current == nil {
+			current = make([]map[string]any, 0)
 		}
 	}
 	return current, 0, ""

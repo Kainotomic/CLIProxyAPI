@@ -672,7 +672,17 @@ func (h *Host) CheckPreRoutePolicyExcept(ctx context.Context, req pluginapi.Requ
 		resp, ok := h.callRequestInterceptor(ctx, record, "PreRoutePolicy.CheckPreRoutePolicy", func(callCtx context.Context, callReq pluginapi.RequestInterceptRequest) (pluginapi.RequestInterceptResponse, error) {
 			return policy.CheckPreRoutePolicy(callCtx, callReq)
 		}, nextReq)
-		if ok && resp.Terminate {
+		if !ok {
+			return pluginapi.RequestInterceptResponse{
+				Terminate:    true,
+				StatusCode:   http.StatusServiceUnavailable,
+				ResponseBody: []byte(`{"error":"pre-route policy unavailable"}`),
+				ResponseHeaders: http.Header{
+					"Content-Type": []string{"application/json"},
+				},
+			}
+		}
+		if resp.Terminate {
 			return resp
 		}
 	}

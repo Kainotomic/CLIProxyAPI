@@ -1369,6 +1369,9 @@ type ModelFilterRequest struct {
 	Headers http.Header
 	Query   url.Values
 	Models  []map[string]any
+	// AccessMetadata is the read-only metadata produced by the host access
+	// provider for the authenticated caller, when available.
+	AccessMetadata map[string]string
 }
 
 // ModelFilterResponse returns the filtered model list. Handled=false leaves the

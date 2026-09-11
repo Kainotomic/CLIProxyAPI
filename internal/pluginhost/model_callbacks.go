@@ -40,7 +40,18 @@ func (h *Host) callHostModelList(ctx context.Context, request []byte) ([]byte, e
 	if format == "" {
 		format = "openai"
 	}
-	models := registry.GetGlobalRegistry().GetAvailableModels(format)
+	var (
+		models  []map[string]any
+		errList error
+	)
+	if provider := h.currentModelListProvider(); provider != nil {
+		models, errList = provider(ctx, format)
+	} else {
+		models = registry.GetGlobalRegistry().GetAvailableModels(format)
+	}
+	if errList != nil {
+		return nil, fmt.Errorf("list active host models: %w", errList)
+	}
 	if models == nil {
 		models = make([]map[string]any, 0)
 	}

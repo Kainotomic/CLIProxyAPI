@@ -554,6 +554,26 @@ func prepareCallRequest(body []byte, contentType string) ([]byte, string, string
 	return body, contentType, model, nil
 }
 
+// RequestedCallModel resolves a live call's effective model using the same
+// parsing and client-secret session rules as Handle.
+func RequestedCallModel(body []byte, contentType string, session json.RawMessage) (string, error) {
+	preparedBody, preparedContentType, model, errPrepare := prepareCallRequest(body, contentType)
+	if errPrepare != nil {
+		return "", errPrepare
+	}
+	_, _, model, errSession := applyClientSecretCallSession(preparedBody, preparedContentType, model, session)
+	if errSession != nil {
+		return "", errSession
+	}
+	return model, nil
+}
+
+// ClientSecretSessionModel returns the model scoped into a realtime client
+// secret session.
+func ClientSecretSessionModel(session json.RawMessage) string {
+	return modelFromJSON(session)
+}
+
 func applyClientSecretCallSession(body []byte, contentType, model string, session json.RawMessage) ([]byte, string, string, error) {
 	if len(session) == 0 {
 		return body, contentType, model, nil

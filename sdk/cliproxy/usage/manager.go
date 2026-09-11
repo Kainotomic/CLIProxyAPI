@@ -83,6 +83,29 @@ type reasoningEffortContextKey struct{}
 type serviceTierContextKey struct{}
 type generateContextKey struct{}
 type streamContextKey struct{}
+type executionRequestIDContextKey struct{}
+
+// WithExecutionRequestID stores the execution-scoped request ID used by
+// interceptor and lifecycle callbacks so usage sinks can correlate settlement.
+func WithExecutionRequestID(ctx context.Context, requestID string) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	requestID = strings.TrimSpace(requestID)
+	if requestID == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, executionRequestIDContextKey{}, requestID)
+}
+
+// ExecutionRequestIDFromContext returns the execution-scoped request ID.
+func ExecutionRequestIDFromContext(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	requestID, _ := ctx.Value(executionRequestIDContextKey{}).(string)
+	return strings.TrimSpace(requestID)
+}
 
 // WithRequestedModelAlias stores the client-requested model name for usage sinks.
 func WithRequestedModelAlias(ctx context.Context, alias string) context.Context {

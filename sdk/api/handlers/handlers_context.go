@@ -16,6 +16,8 @@ type selectedAuthCallbackContextKey struct{}
 
 type preparedModelRouteContextKey struct{}
 
+type preRoutePolicyCheckedContextKey struct{}
+
 type executionSessionContextKey struct{}
 
 type disallowFreeAuthContextKey struct{}
@@ -109,6 +111,23 @@ func preparedModelRouteFromContext(ctx context.Context, skipRouterPluginID strin
 	}
 	decision, ok := ctx.Value(preparedModelRouteContextKey{}).(modelRouteDecision)
 	return decision, ok
+}
+
+// WithPreRoutePolicyChecked marks a context whose pre-route policy check has
+// already run, so the execution seam does not evaluate the same policy twice.
+func WithPreRoutePolicyChecked(ctx context.Context) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, preRoutePolicyCheckedContextKey{}, true)
+}
+
+func preRoutePolicyChecked(ctx context.Context) bool {
+	if ctx == nil {
+		return false
+	}
+	raw, ok := ctx.Value(preRoutePolicyCheckedContextKey{}).(bool)
+	return ok && raw
 }
 
 // WithExecutionSessionID returns a child context tagged with a long-lived execution session ID.

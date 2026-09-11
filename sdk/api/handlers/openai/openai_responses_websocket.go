@@ -417,6 +417,19 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 			requestModelName = strings.TrimSpace(gjson.GetBytes(lastRequest, "model").String())
 		}
 		executionParent := context.WithValue(c.Request.Context(), "gin", c)
+		// Policy runs before PrepareStreamModelRoute so a denied turn is rejected
+		// before the model router observes it. The marker keeps the execution seam
+		// from evaluating the same check-only policy a second time.
+		if errMsg := h.PreRouteModelPolicy(executionParent, h.HandlerType(), requestModelName, payload, true); errMsg != nil {
+			h.LoggingAPIResponseError(executionParent, errMsg)
+			markAPIResponseTimestamp(c)
+			if _, errWrite := writeResponsesWebsocketError(writer, wsTimelineLog, errMsg); errWrite != nil {
+				wsTerminateErr = errWrite
+				return
+			}
+			continue
+		}
+		executionParent = handlers.WithPreRoutePolicyChecked(executionParent)
 		executionParent, routeOverridesModelResolution := h.PrepareStreamModelRoute(
 			executionParent,
 			h.HandlerType(),
