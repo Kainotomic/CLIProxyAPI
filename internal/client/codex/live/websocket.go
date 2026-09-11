@@ -20,6 +20,11 @@ import (
 
 const defaultStandardRealtimeModel = "gpt-realtime"
 
+// DefaultRealtimeModel is the model assumed when a Realtime request omits one. It is
+// exported so request-time access policy can evaluate the same effective model
+// the handler will use.
+const DefaultRealtimeModel = defaultStandardRealtimeModel
+
 // HandleRealtimeWebsocket dispatches a standard Realtime WebSocket or an existing call sideband.
 func (h *Handler) HandleRealtimeWebsocket(c *gin.Context) {
 	if strings.TrimSpace(c.Query("call_id")) != "" {

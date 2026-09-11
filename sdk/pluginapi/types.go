@@ -106,6 +106,10 @@ type Capabilities struct {
 	ResponseAfterTranslator ResponseNormalizer
 	// RequestInterceptor rewrites execution requests before and after credential selection.
 	RequestInterceptor RequestInterceptor
+	// PreRoutePolicy applies plugin-owned model admission before native model
+	// routing and model-to-provider resolution. Unlike RequestInterceptor it is
+	// check-only: mutations are ignored and no request lifecycle events fire.
+	PreRoutePolicy PreRoutePolicy
 	// RequestLifecyclePlugin asynchronously receives one terminal event for each request that reached request interception.
 	RequestLifecyclePlugin RequestLifecyclePlugin
 	// ResponseInterceptor rewrites successful non-streaming HTTP execution responses before downstream delivery.
@@ -122,6 +126,13 @@ type Capabilities struct {
 	CommandLinePlugin CommandLinePlugin
 	// ManagementAPI declares plugin-owned diagnostic Management API and resource routes.
 	ManagementAPI ManagementAPI
+	// PublicAPI declares plugin-owned routes that must not inherit the operator-only
+	// management-password middleware. The plugin remains responsible for any
+	// session or user authorization checks on these routes.
+	PublicAPI PublicAPI
+	// ModelFilter filters model-list responses after native discovery and before
+	// they are returned to the client.
+	ModelFilter ModelFilter
 }
 
 // ExecutorModelScope declares which model-registration paths a plugin executor supports.
@@ -980,6 +991,15 @@ type RequestInterceptor interface {
 	InterceptRequestAfterAuth(context.Context, RequestInterceptRequest) (RequestInterceptResponse, error)
 }
 
+// PreRoutePolicy applies plugin-owned model admission before native model
+// routing and model-to-provider resolution. It is check-only: response
+// mutations are ignored, and only termination decisions take effect. Plugins
+// should treat the request as advisory (no budget reservations) because the
+// normal execution interceptors still run for admitted requests.
+type PreRoutePolicy interface {
+	CheckPreRoutePolicy(context.Context, RequestInterceptRequest) (RequestInterceptResponse, error)
+}
+
 // RequestLifecyclePlugin receives asynchronous terminal events after execution finishes, fails, is rejected, or is canceled.
 type RequestLifecyclePlugin interface {
 	HandleRequestComplete(context.Context, RequestCompletion) error
@@ -1313,6 +1333,53 @@ type ManagementAPI interface {
 	RegisterManagement(context.Context, ManagementRegistrationRequest) (ManagementRegistrationResponse, error)
 }
 
+// PublicAPI declares a plugin-owned control-plane or other public route surface.
+// Routes are mounted below the host-provided BasePath and are dispatched over
+// the same request/response bridge as ManagementAPI routes.
+type PublicAPI interface {
+	RegisterPublicAPI(context.Context, PublicAPIRegistrationRequest) (PublicAPIRegistrationResponse, error)
+}
+
+// PublicAPIRegistrationRequest carries host context for public route registration.
+type PublicAPIRegistrationRequest struct {
+	Plugin   Metadata
+	BasePath string
+}
+
+// PublicAPIRegistrationResponse lists plugin-owned public routes.
+type PublicAPIRegistrationResponse struct {
+	Routes []PublicAPIRoute
+}
+
+// PublicAPIRoute describes one exact plugin-owned public route.
+type PublicAPIRoute struct {
+	Method  string
+	Path    string
+	Handler ManagementHandler
+}
+
+// ModelFilter applies access-provider-specific visibility to a model list.
+type ModelFilter interface {
+	FilterModels(context.Context, ModelFilterRequest) (ModelFilterResponse, error)
+}
+
+// ModelFilterRequest carries the native model-list response in a protocol-neutral form.
+type ModelFilterRequest struct {
+	Path    string
+	Headers http.Header
+	Query   url.Values
+	Models  []map[string]any
+}
+
+// ModelFilterResponse returns the filtered model list. Handled=false leaves the
+// host's native response unchanged.
+type ModelFilterResponse struct {
+	Handled    bool
+	Models     []map[string]any
+	StatusCode int
+	Error      string
+}
+
 // ManagementRegistrationRequest carries host context for Management API registration.
 type ManagementRegistrationRequest struct {
 	// Plugin is the metadata of the plugin being registered.
@@ -1390,6 +1457,11 @@ type ManagementResponse struct {
 
 // UsageRecord describes request usage and billing metadata.
 type UsageRecord struct {
+	// RequestID uniquely identifies the model execution that produced this record.
+	// Plugins that perform reservation settlement must use this value rather than
+	// reconstructing identity from an in-process context, which is unavailable
+	// across the dynamic-plugin RPC boundary.
+	RequestID string
 	// Provider identifies the upstream provider.
 	Provider string
 	// ExecutorType identifies the executor implementation.
@@ -1421,6 +1493,8 @@ type UsageRecord struct {
 	Generate bool
 	// RequestedAt is the time the request was received.
 	RequestedAt time.Time
+	// Stream reports whether the request used a streaming execution path.
+	Stream bool
 	// Latency is the total request latency.
 	Latency time.Duration
 	// TTFT is the time to first token for streaming requests.

@@ -646,3 +646,35 @@ func cloneStringMap(in map[string]string) map[string]string {
 	}
 	return out
 }
+
+// CheckPreRoutePolicy applies plugin-owned pre-routing model admission. It is
+// check-only: mutations are ignored and the first termination wins.
+func (h *Host) CheckPreRoutePolicy(ctx context.Context, req pluginapi.RequestInterceptRequest) pluginapi.RequestInterceptResponse {
+	return h.CheckPreRoutePolicyExcept(ctx, req, "")
+}
+
+// CheckPreRoutePolicyExcept is CheckPreRoutePolicy excluding one plugin's
+// policy, used for executions nested inside that plugin's executor.
+func (h *Host) CheckPreRoutePolicyExcept(ctx context.Context, req pluginapi.RequestInterceptRequest, skipPluginID string) pluginapi.RequestInterceptResponse {
+	if h == nil {
+		return pluginapi.RequestInterceptResponse{}
+	}
+	skipPluginID = strings.TrimSpace(skipPluginID)
+	for _, record := range h.activeRecords() {
+		policy := record.plugin.Capabilities.PreRoutePolicy
+		if policy == nil || h.isPluginFused(record.id) || record.id == skipPluginID {
+			continue
+		}
+		nextReq := req
+		nextReq.Headers = cloneHeader(req.Headers)
+		nextReq.Body = bytes.Clone(req.Body)
+		nextReq.Metadata = cloneInterceptorMetadata(req.Metadata)
+		resp, ok := h.callRequestInterceptor(ctx, record, "PreRoutePolicy.CheckPreRoutePolicy", func(callCtx context.Context, callReq pluginapi.RequestInterceptRequest) (pluginapi.RequestInterceptResponse, error) {
+			return policy.CheckPreRoutePolicy(callCtx, callReq)
+		}, nextReq)
+		if ok && resp.Terminate {
+			return resp
+		}
+	}
+	return pluginapi.RequestInterceptResponse{}
+}

@@ -220,6 +220,13 @@ func requestExecutionMetadata(ctx context.Context) map[string]any {
 	if pinnedAuthID := pinnedAuthIDFromContext(ctx); pinnedAuthID != "" {
 		meta[coreexecutor.PinnedAuthMetadataKey] = pinnedAuthID
 	}
+	if ginCtx != nil {
+		if value, exists := ginCtx.Get("accessMetadata"); exists {
+			if accessMetadata, ok := value.(map[string]string); ok && len(accessMetadata) > 0 {
+				meta["access_metadata"] = accessMetadata
+			}
+		}
+	}
 	if selectedCallback := selectedAuthIDCallbackFromContext(ctx); selectedCallback != nil {
 		meta[coreexecutor.SelectedAuthCallbackMetadataKey] = selectedCallback
 	}

@@ -115,6 +115,9 @@ func registerRPCPlugin(ctx context.Context, host *Host, id string, client plugin
 	if resp.Capabilities.RequestInterceptor {
 		plugin.Capabilities.RequestInterceptor = adapter
 	}
+	if resp.Capabilities.PreRoutePolicy {
+		plugin.Capabilities.PreRoutePolicy = adapter
+	}
 	if resp.Capabilities.RequestLifecyclePlugin {
 		plugin.Capabilities.RequestLifecyclePlugin = adapter
 	}
@@ -147,6 +150,12 @@ func registerRPCPlugin(ctx context.Context, host *Host, id string, client plugin
 	}
 	if resp.Capabilities.ManagementAPI {
 		plugin.Capabilities.ManagementAPI = adapter
+	}
+	if resp.Capabilities.PublicAPI {
+		plugin.Capabilities.PublicAPI = adapter
+	}
+	if resp.Capabilities.ModelFilter {
+		plugin.Capabilities.ModelFilter = adapter
 	}
 	return plugin, nil
 }
@@ -485,6 +494,10 @@ func (a *rpcPluginAdapter) NormalizeRequest(ctx context.Context, req pluginapi.R
 	return callPlugin[pluginapi.PayloadResponse](ctx, a.client, pluginabi.MethodRequestNormalize, req)
 }
 
+func (a *rpcPluginAdapter) CheckPreRoutePolicy(ctx context.Context, req pluginapi.RequestInterceptRequest) (pluginapi.RequestInterceptResponse, error) {
+	return callPlugin[pluginapi.RequestInterceptResponse](ctx, a.client, pluginabi.MethodRequestPreRoutePolicy, req)
+}
+
 func (a *rpcPluginAdapter) InterceptRequestBeforeAuth(ctx context.Context, req pluginapi.RequestInterceptRequest) (pluginapi.RequestInterceptResponse, error) {
 	callbackID, closeCallback := a.openHostCallbackContext(ctx)
 	defer closeCallback()
@@ -597,6 +610,38 @@ func (a *rpcPluginAdapter) HandleManagement(ctx context.Context, req pluginapi.M
 		ManagementRequest: req,
 		HostCallbackID:    callbackID,
 	})
+}
+
+func (a *rpcPluginAdapter) RegisterPublicAPI(ctx context.Context, req pluginapi.PublicAPIRegistrationRequest) (pluginapi.PublicAPIRegistrationResponse, error) {
+	resp, errCall := callPlugin[rpcPublicAPIRegistrationResponse](ctx, a.client, pluginabi.MethodPublicRegister, req)
+	if errCall != nil {
+		return pluginapi.PublicAPIRegistrationResponse{}, errCall
+	}
+	routes := make([]pluginapi.PublicAPIRoute, 0, len(resp.Routes))
+	for _, route := range resp.Routes {
+		// Public routes dispatch over public.handle so plugin-owned
+		// authentication stays distinct from operator-authenticated
+		// management.handle dispatch.
+		route.Handler = rpcPublicRouteHandler{adapter: a}
+		routes = append(routes, route)
+	}
+	return pluginapi.PublicAPIRegistrationResponse{Routes: routes}, nil
+}
+
+// rpcPublicRouteHandler dispatches plugin-owned public control-plane routes.
+type rpcPublicRouteHandler struct {
+	adapter *rpcPluginAdapter
+}
+
+func (h rpcPublicRouteHandler) HandleManagement(ctx context.Context, req pluginapi.ManagementRequest) (pluginapi.ManagementResponse, error) {
+	if h.adapter == nil || h.adapter.client == nil {
+		return pluginapi.ManagementResponse{}, fmt.Errorf("public route handler is unavailable")
+	}
+	return callPlugin[pluginapi.ManagementResponse](ctx, h.adapter.client, pluginabi.MethodPublicHandle, req)
+}
+
+func (a *rpcPluginAdapter) FilterModels(ctx context.Context, req pluginapi.ModelFilterRequest) (pluginapi.ModelFilterResponse, error) {
+	return callPlugin[pluginapi.ModelFilterResponse](ctx, a.client, pluginabi.MethodModelFilter, req)
 }
 
 func httpResponseFromPlugin(resp pluginapi.ExecutorHTTPResponse, req *http.Request) *http.Response {

@@ -598,3 +598,55 @@ func (h *BaseAPIHandler) applyResponseInterceptors(ctx context.Context, requestI
 	}
 	return body, responseHeaders
 }
+
+// preRoutePolicyHost is the optional host capability consulted before native
+// model routing.
+type preRoutePolicyHost interface {
+	CheckPreRoutePolicyExcept(context.Context, pluginapi.RequestInterceptRequest, string) pluginapi.RequestInterceptResponse
+}
+
+// preRouteModelPolicy applies plugin-owned model admission before native
+// model-to-provider resolution and model routing, mirroring the native
+// control-plane authorizer hook that ran ahead of applyModelRouter. It is a
+// check-only probe over the dedicated pre-route policy capability: plugins
+// enforce model and budget policy without creating reservations, because the
+// full interceptor chain still runs for admitted requests during execution.
+func (h *BaseAPIHandler) preRouteModelPolicy(ctx context.Context, handlerType, modelName string, rawJSON []byte, stream bool, skipPluginID string) *interfaces.ErrorMessage {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	host := h.interceptorHost()
+	if host == nil {
+		return nil
+	}
+	policyHost, okPolicy := host.(preRoutePolicyHost)
+	if !okPolicy || policyHost == nil {
+		return nil
+	}
+	metadata := requestExecutionMetadata(ctx)
+	if metadata == nil {
+		metadata = make(map[string]any)
+	}
+	metadata["without_budget_reservation"] = true
+	resp := policyHost.CheckPreRoutePolicyExcept(ctx, pluginapi.RequestInterceptRequest{
+		TraceID:        logging.GetRequestID(ctx),
+		SourceFormat:   handlerType,
+		Model:          modelName,
+		RequestedModel: modelName,
+		Stream:         stream,
+		Headers:        modelExecutionHeaders(ctx, nil),
+		Body:           cloneBytes(rawJSON),
+		Metadata:       metadata,
+	}, skipPluginID)
+	if resp.Terminate {
+		return requestTerminationError(resp)
+	}
+	return nil
+}
+
+// PreRouteModelPolicy exposes the plugin pre-route admission check to entry
+// points outside the normal execution seams, such as the direct Codex Alpha
+// Search route. A nil result means the request is admitted.
+func (h *BaseAPIHandler) PreRouteModelPolicy(ctx context.Context, handlerType, modelName string, rawJSON []byte, stream bool) *interfaces.ErrorMessage {
+	return h.preRouteModelPolicy(ctx, handlerType, modelName, rawJSON, stream, "")
+}

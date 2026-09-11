@@ -33,6 +33,11 @@ const (
 	maxBodySize      = 16 << 20
 )
 
+// DefaultLiveModel is the model assumed when a live call request omits one. It is
+// exported so request-time access policy can evaluate the same effective model
+// the handler will use.
+const DefaultLiveModel = defaultLiveModel
+
 var liveProtocolHeaders = []string{
 	"OpenAI-Alpha",
 	"X-Session-Id",

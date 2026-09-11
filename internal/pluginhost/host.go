@@ -81,6 +81,7 @@ type Host struct {
 	commandLineFlags       map[string]commandLineFlagRecord
 	commandLineHits        map[string]struct{}
 	managementRoutes       map[string]managementRouteRecord
+	publicRoutes           map[string]publicRouteRecord
 	resourceRoutes         map[string]resourceRouteRecord
 	streams                *streamBridge
 	httpStreams            *hostHTTPStreamBridge
@@ -111,6 +112,7 @@ func New() *Host {
 		commandLineFlags:       make(map[string]commandLineFlagRecord),
 		commandLineHits:        make(map[string]struct{}),
 		managementRoutes:       make(map[string]managementRouteRecord),
+		publicRoutes:           make(map[string]publicRouteRecord),
 		resourceRoutes:         make(map[string]resourceRouteRecord),
 		streams:                newStreamBridge(),
 		httpStreams:            newHostHTTPStreamBridge(),
@@ -220,6 +222,7 @@ func (h *Host) ApplyConfig(ctx context.Context, cfg *config.Config) {
 	if !rc.Enabled {
 		h.mu.Lock()
 		h.managementRoutes = make(map[string]managementRouteRecord)
+		h.publicRoutes = make(map[string]publicRouteRecord)
 		h.resourceRoutes = make(map[string]resourceRouteRecord)
 		h.rebuildActivePluginMapsLocked(nil)
 		h.snapshot.Store(emptySnapshot())
@@ -234,6 +237,7 @@ func (h *Host) ApplyConfig(ctx context.Context, cfg *config.Config) {
 		log.Warnf("pluginhost: failed to select plugin files: %v", errSelect)
 		h.mu.Lock()
 		h.managementRoutes = make(map[string]managementRouteRecord)
+		h.publicRoutes = make(map[string]publicRouteRecord)
 		h.resourceRoutes = make(map[string]resourceRouteRecord)
 		h.rebuildActivePluginMapsLocked(nil)
 		h.snapshot.Store(emptySnapshot())
@@ -698,6 +702,7 @@ func (h *Host) ShutdownAllContext(ctx context.Context) {
 	h.commandLineFlags = make(map[string]commandLineFlagRecord)
 	h.commandLineHits = make(map[string]struct{})
 	h.managementRoutes = make(map[string]managementRouteRecord)
+	h.publicRoutes = make(map[string]publicRouteRecord)
 	h.resourceRoutes = make(map[string]resourceRouteRecord)
 	h.pluginFileVersions = make(map[string]string)
 	h.activePluginVersions = make(map[string]string)
@@ -928,17 +933,17 @@ func (h *Host) rollbackReplacement(lp *loadedPlugin, item runtimeItemConfig) (ca
 		return capabilityRecord{}, pluginFile{}, false
 	}
 	return capabilityRecord{
-			id:       lp.id,
-			path:     lp.path,
-			version:  lp.version,
-			priority: item.Priority,
-			meta:     plugin.Metadata,
-			plugin:   plugin,
-		}, pluginFile{
-			ID:      lp.id,
-			Path:    lp.path,
-			Version: lp.version,
-		}, true
+		id:       lp.id,
+		path:     lp.path,
+		version:  lp.version,
+		priority: item.Priority,
+		meta:     plugin.Metadata,
+		plugin:   plugin,
+	}, pluginFile{
+		ID:      lp.id,
+		Path:    lp.path,
+		Version: lp.version,
+	}, true
 }
 
 func (h *Host) callRegister(ctx context.Context, lp *loadedPlugin, item runtimeItemConfig) (pluginapi.Plugin, bool) {

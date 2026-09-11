@@ -68,6 +68,8 @@ const (
 	MethodRequestInterceptAfter  = "request.intercept_after"
 	MethodRequestComplete        = "request.complete"
 
+	MethodRequestPreRoutePolicy = "request.pre_route_policy"
+
 	MethodResponseTranslate            = "response.translate"
 	MethodResponseNormalizeBefore      = "response.normalize_before"
 	MethodResponseNormalizeAfter       = "response.normalize_after"
@@ -86,11 +88,15 @@ const (
 
 	MethodManagementRegister = "management.register"
 	MethodManagementHandle   = "management.handle"
+	MethodPublicRegister     = "public.register"
+	MethodPublicHandle       = "public.handle"
+	MethodModelFilter        = "model.filter"
 
 	MethodHostHTTPDo             = "host.http.do"
 	MethodHostHTTPDoStream       = "host.http.do_stream"
 	MethodHostHTTPStreamRead     = "host.http.stream_read"
 	MethodHostHTTPStreamClose    = "host.http.stream_close"
+	MethodHostModelList          = "host.model.list"
 	MethodHostModelExecute       = "host.model.execute"
 	MethodHostModelExecuteStream = "host.model.execute_stream"
 	MethodHostModelStreamRead    = "host.model.stream_read"

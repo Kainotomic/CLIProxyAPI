@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -78,18 +79,20 @@ func (s *Server) setupRoutes() {
 		v1.POST("/responses", openaiResponsesHandlers.Responses)
 		v1.POST("/responses/compact", openaiResponsesHandlers.Compact)
 		v1.POST("/alpha/search", s.codexAlphaSearch)
-		v1.POST("/live", s.codexLiveHandler.Handle)
+		v1.POST("/live", s.directModelPolicyMiddleware(codexlive.DefaultLiveModel), s.codexLiveHandler.Handle)
 		v1.GET("/live/:call_id", s.codexLiveHandler.HandleSideband)
 	}
 
 	realtimeAuth := realtimeAuthMiddleware(s.accessManager, s.codexLiveHandler)
 	standardAuth := realtimeStandardAuthMiddleware(s.accessManager)
-	s.engine.GET("/v1/realtime", realtimeAuth, s.codexLiveHandler.HandleRealtimeWebsocket)
-	s.engine.POST("/v1/realtime", realtimeAuth, s.codexLiveHandler.Handle)
-	s.engine.POST("/v1/realtime/calls", realtimeAuth, s.codexLiveHandler.Handle)
+	realtimeModelPolicy := s.directModelPolicyMiddleware(codexlive.DefaultRealtimeModel)
+	liveModelPolicy := s.directModelPolicyMiddleware(codexlive.DefaultLiveModel)
+	s.engine.GET("/v1/realtime", realtimeAuth, realtimeModelPolicy, s.codexLiveHandler.HandleRealtimeWebsocket)
+	s.engine.POST("/v1/realtime", realtimeAuth, liveModelPolicy, s.codexLiveHandler.Handle)
+	s.engine.POST("/v1/realtime/calls", realtimeAuth, liveModelPolicy, s.codexLiveHandler.Handle)
 	s.engine.GET("/v1/realtime/calls/:call_id", realtimeAuth, s.codexLiveHandler.HandleSideband)
-	s.engine.POST("/v1/realtime/client_secrets", standardAuth, s.codexLiveHandler.CreateClientSecret)
-	s.engine.POST("/v1/realtime/sessions", standardAuth, s.codexLiveHandler.CreateLegacySession)
+	s.engine.POST("/v1/realtime/client_secrets", standardAuth, realtimeModelPolicy, s.codexLiveHandler.CreateClientSecret)
+	s.engine.POST("/v1/realtime/sessions", standardAuth, realtimeModelPolicy, s.codexLiveHandler.CreateLegacySession)
 	s.engine.POST("/v1/realtime/transcription_sessions", standardAuth, s.codexLiveHandler.HandleTranscriptionSession)
 	s.engine.GET("/v1/realtime/translations", realtimeAuth, s.codexLiveHandler.HandleTranslation)
 	s.engine.POST("/v1/realtime/translations", realtimeAuth, s.codexLiveHandler.HandleTranslation)
@@ -333,6 +336,12 @@ func (s *Server) codexAlphaSearch(c *gin.Context) {
 	}
 	ctx := context.WithValue(c.Request.Context(), "gin", c)
 	ctx = handlers.EnrichContextWithSessionHierarchy(ctx, selectionHeaders, body, nil)
+	if s.handlers != nil {
+		if errMsg := s.handlers.PreRouteModelPolicy(ctx, codexAlphaSearchSourceFormat, strings.TrimSpace(routing.Model), body, false); errMsg != nil {
+			s.handlers.WriteErrorResponse(c, errMsg)
+			return
+		}
+	}
 	selectionModel, errRoute := s.codexAlphaSearchSelectionModel(ctx, c, body, strings.TrimSpace(routing.Model))
 	if errRoute != nil {
 		log.WithError(errRoute).Warn("codex alpha search: model router returned an unsupported target")
@@ -567,6 +576,13 @@ func isAnthropicModelsRequest(c *gin.Context) bool {
 // route to the Claude handler, otherwise they route to the OpenAI handler.
 func (s *Server) unifiedModelsHandler(openaiHandler *openai.OpenAIAPIHandler, claudeHandler *claude.ClaudeCodeAPIHandler) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		capture := &modelListCapture{ResponseWriter: c.Writer}
+		originalWriter := c.Writer
+		c.Writer = capture
+		defer func() {
+			c.Writer = originalWriter
+			s.writeFilteredModelList(c, originalWriter, capture)
+		}()
 		if grokbuild.IsGrokShellUserAgent(c.GetHeader("User-Agent")) {
 			s.handleGrokModels(c)
 			return
@@ -594,6 +610,72 @@ func (s *Server) unifiedModelsHandler(openaiHandler *openai.OpenAIAPIHandler, cl
 			openaiHandler.OpenAIModels(c)
 		}
 	}
+}
+
+type modelListCapture struct {
+	gin.ResponseWriter
+	body   bytes.Buffer
+	status int
+}
+
+func (w *modelListCapture) WriteHeader(statusCode int) {
+	if w.status == 0 {
+		w.status = statusCode
+	}
+}
+
+func (w *modelListCapture) Write(data []byte) (int, error) {
+	if w.status == 0 {
+		w.status = http.StatusOK
+	}
+	return w.body.Write(data)
+}
+
+func (w *modelListCapture) WriteString(data string) (int, error) {
+	return w.Write([]byte(data))
+}
+
+func (s *Server) writeFilteredModelList(c *gin.Context, writer gin.ResponseWriter, capture *modelListCapture) {
+	if capture == nil || writer == nil {
+		return
+	}
+	statusCode := capture.status
+	if statusCode == 0 {
+		statusCode = http.StatusOK
+	}
+	body := capture.body.Bytes()
+	if s != nil && s.pluginHost != nil && statusCode >= 200 && statusCode < 300 {
+		var envelope map[string]any
+		if errDecode := json.Unmarshal(body, &envelope); errDecode == nil {
+			if rawModels, okModels := envelope["data"].([]any); okModels {
+				models := make([]map[string]any, 0, len(rawModels))
+				for _, raw := range rawModels {
+					if model, okModel := raw.(map[string]any); okModel {
+						models = append(models, model)
+					}
+				}
+				filtered, filterStatus, filterError := s.pluginHost.FilterModels(c.Request.Context(), c.Request.URL.Path, c.Request.Header.Clone(), c.Request.URL.Query(), models)
+				if filterStatus != 0 {
+					statusCode = filterStatus
+					if filterError == "" {
+						filterError = http.StatusText(filterStatus)
+					}
+					body, _ = json.Marshal(gin.H{"error": filterError})
+				} else {
+					items := make([]any, 0, len(filtered))
+					for _, model := range filtered {
+						items = append(items, model)
+					}
+					envelope["data"] = items
+					if encoded, errEncode := json.Marshal(envelope); errEncode == nil {
+						body = encoded
+					}
+				}
+			}
+		}
+	}
+	writer.WriteHeader(statusCode)
+	_, _ = writer.Write(body)
 }
 
 func grokModelsFromHomeEntries(entries []homeModelEntry) []grokbuild.ModelInfo {
@@ -691,8 +773,61 @@ func (s *Server) geminiModelsHandler(geminiHandler *gemini.GeminiAPIHandler) gin
 			return
 		}
 
+		capture := &modelListCapture{ResponseWriter: c.Writer}
+		originalWriter := c.Writer
+		c.Writer = capture
+		defer func() {
+			c.Writer = originalWriter
+			s.writeFilteredGeminiModelList(c, originalWriter, capture)
+		}()
 		geminiHandler.GeminiModels(c)
 	}
+}
+
+// writeFilteredGeminiModelList applies the plugin model filter to a
+// /v1beta/models response envelope ("models" list), mirroring the managed-key
+// filtering the native control plane applied to Gemini model listings.
+func (s *Server) writeFilteredGeminiModelList(c *gin.Context, writer gin.ResponseWriter, capture *modelListCapture) {
+	if capture == nil || writer == nil {
+		return
+	}
+	statusCode := capture.status
+	if statusCode == 0 {
+		statusCode = http.StatusOK
+	}
+	body := capture.body.Bytes()
+	if s != nil && s.pluginHost != nil && statusCode >= 200 && statusCode < 300 {
+		var envelope map[string]any
+		if errDecode := json.Unmarshal(body, &envelope); errDecode == nil {
+			if rawModels, okModels := envelope["models"].([]any); okModels {
+				models := make([]map[string]any, 0, len(rawModels))
+				for _, raw := range rawModels {
+					if model, okModel := raw.(map[string]any); okModel {
+						models = append(models, model)
+					}
+				}
+				filtered, filterStatus, filterError := s.pluginHost.FilterModels(c.Request.Context(), c.Request.URL.Path, c.Request.Header.Clone(), c.Request.URL.Query(), models)
+				if filterStatus != 0 {
+					statusCode = filterStatus
+					if filterError == "" {
+						filterError = http.StatusText(filterStatus)
+					}
+					body, _ = json.Marshal(gin.H{"error": filterError})
+				} else {
+					items := make([]any, 0, len(filtered))
+					for _, model := range filtered {
+						items = append(items, model)
+					}
+					envelope["models"] = items
+					if encoded, errEncode := json.Marshal(envelope); errEncode == nil {
+						body = encoded
+					}
+				}
+			}
+		}
+	}
+	writer.WriteHeader(statusCode)
+	_, _ = writer.Write(body)
 }
 
 func (s *Server) geminiGetHandler(geminiHandler *gemini.GeminiAPIHandler) gin.HandlerFunc {

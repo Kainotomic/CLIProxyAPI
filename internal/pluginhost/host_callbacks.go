@@ -99,6 +99,8 @@ func hostCallbackPluginIDFromContext(ctx context.Context) string {
 
 func (h *Host) callFromPlugin(ctx context.Context, method string, request []byte) ([]byte, error) {
 	switch method {
+	case pluginabi.MethodHostModelList:
+		return h.callHostModelList(ctx, request)
 	case pluginabi.MethodHostModelExecute:
 		return h.callHostModelExecute(ctx, request)
 	case pluginabi.MethodHostModelExecuteStream:

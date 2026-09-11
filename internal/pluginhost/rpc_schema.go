@@ -33,6 +33,7 @@ type rpcCapabilities struct {
 	RequestTranslator             bool                         `json:"request_translator"`
 	RequestNormalizer             bool                         `json:"request_normalizer"`
 	RequestInterceptor            bool                         `json:"request_interceptor"`
+	PreRoutePolicy                bool                         `json:"pre_route_policy"`
 	RequestLifecyclePlugin        bool                         `json:"request_lifecycle_plugin"`
 	ResponseTranslator            bool                         `json:"response_translator"`
 	ResponseBeforeTranslator      bool                         `json:"response_before_translator"`
@@ -44,6 +45,8 @@ type rpcCapabilities struct {
 	UsagePlugin                   bool                         `json:"usage_plugin"`
 	CommandLinePlugin             bool                         `json:"command_line_plugin"`
 	ManagementAPI                 bool                         `json:"management_api"`
+	PublicAPI                     bool                         `json:"public_api"`
+	ModelFilter                   bool                         `json:"model_filter"`
 }
 
 type rpcIdentifierResponse struct {
@@ -131,6 +134,10 @@ type rpcManagementRegistrationResponse struct {
 	Resources []pluginapi.ResourceRoute   `json:"resources,omitempty"`
 }
 
+type rpcPublicAPIRegistrationResponse struct {
+	Routes []pluginapi.PublicAPIRoute `json:"routes,omitempty"`
+}
+
 type rpcEmptyResponse struct{}
 
 func rpcCapabilitiesFromPlugin(plugin pluginapi.Plugin) rpcCapabilities {
@@ -151,6 +158,7 @@ func rpcCapabilitiesFromPlugin(plugin pluginapi.Plugin) rpcCapabilities {
 		RequestNormalizer:             caps.RequestNormalizer != nil,
 		RequestInterceptor:            caps.RequestInterceptor != nil,
 		RequestLifecyclePlugin:        caps.RequestLifecyclePlugin != nil,
+		PreRoutePolicy:                caps.PreRoutePolicy != nil,
 		ResponseTranslator:            caps.ResponseTranslator != nil,
 		ResponseBeforeTranslator:      caps.ResponseBeforeTranslator != nil,
 		ResponseAfterTranslator:       caps.ResponseAfterTranslator != nil,
@@ -161,6 +169,8 @@ func rpcCapabilitiesFromPlugin(plugin pluginapi.Plugin) rpcCapabilities {
 		UsagePlugin:                   caps.UsagePlugin != nil,
 		CommandLinePlugin:             caps.CommandLinePlugin != nil,
 		ManagementAPI:                 caps.ManagementAPI != nil,
+		PublicAPI:                     caps.PublicAPI != nil,
+		ModelFilter:                   caps.ModelFilter != nil,
 	}
 }
 

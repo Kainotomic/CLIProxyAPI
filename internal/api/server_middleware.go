@@ -1,8 +1,13 @@
 package api
 
 import (
+	"bytes"
+	"io"
 	"net/http"
 	"strings"
+
+	"github.com/google/uuid"
+	"github.com/tidwall/gjson"
 
 	"github.com/gin-gonic/gin"
 	codexlive "github.com/router-for-me/CLIProxyAPI/v7/internal/client/codex/live"
@@ -11,6 +16,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/safemode"
 	sdkaccess "github.com/router-for-me/CLIProxyAPI/v7/sdk/access"
+	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -28,6 +34,113 @@ var corsExposedResponseHeaders = []string{
 	"Retry-After",
 	"X-Request-Id",
 	"OpenAI-Request-Id",
+}
+
+// directModelPolicyBodyLimit bounds the request body buffered purely to read a
+// model identifier. Realtime/live payloads are small JSON control messages; SDP
+// bodies carry no model and fall back to the query/default model.
+const directModelPolicyBodyLimit = 1 << 20
+
+// directModelPolicyMiddleware applies plugin-owned model admission to direct
+// live/realtime entry points that do not enter BaseAPIHandler's execution
+// interceptor path. Those handlers select an upstream OAuth credential directly,
+// so they never reach the request interceptors used by the OpenAI/Claude/Gemini
+// paths. The plugin receives the effective model (request model or the surface's
+// default) plus an explicit no-reservation marker, because these surfaces do not
+// emit the normalized usage records used to settle control-plane reservations.
+// The middleware is a no-op when no plugin host is configured; the plugin passes
+// through requests whose principal carries no managed-key metadata.
+func (s *Server) directModelPolicyMiddleware(defaultModel string) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if s == nil || s.pluginHost == nil || c == nil || c.Request == nil {
+			c.Next()
+			return
+		}
+		model, ok := s.directRequestedModel(c, defaultModel)
+		if !ok {
+			c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": gin.H{
+				"message": "Invalid Realtime request body",
+				"type":    "invalid_request_error",
+				"param":   nil,
+				"code":    "invalid_request",
+			}})
+			return
+		}
+		metadata := map[string]any{"without_budget_reservation": true}
+		if value, exists := c.Get("accessMetadata"); exists {
+			if accessMetadata, ok := value.(map[string]string); ok && len(accessMetadata) > 0 {
+				metadata["access_metadata"] = accessMetadata
+			}
+		}
+		body := directPolicyBody(c)
+		response := s.pluginHost.InterceptRequestBeforeAuth(c.Request.Context(), pluginapi.RequestInterceptRequest{RequestID: uuid.NewString(), TraceID: logging.GetRequestID(c.Request.Context()), SourceFormat: "realtime", Model: model, RequestedModel: model, Stream: true, Headers: c.Request.Header.Clone(), Body: body, Metadata: metadata})
+		if applyDirectPolicyTermination(c, response) {
+			return
+		}
+		c.Next()
+	}
+}
+
+// applyDirectPolicyTermination relays a plugin termination decision to the
+// client. It reports whether the request was terminated (aborting the chain).
+func applyDirectPolicyTermination(c *gin.Context, response pluginapi.RequestInterceptResponse) bool {
+	if !response.Terminate {
+		return false
+	}
+	for key, values := range response.ResponseHeaders {
+		for _, value := range values {
+			c.Header(key, value)
+		}
+	}
+	status := response.StatusCode
+	if status < 400 || status > 599 {
+		status = http.StatusForbidden
+	}
+	c.Data(status, response.ResponseHeaders.Get("Content-Type"), response.ResponseBody)
+	c.Abort()
+	return true
+}
+
+// directPolicyBody snapshots the (already restored) request body for the
+// interceptor payload without consuming it for the downstream handler.
+func directPolicyBody(c *gin.Context) []byte {
+	if c == nil || c.Request == nil || c.Request.Body == nil {
+		return nil
+	}
+	body, _ := io.ReadAll(io.LimitReader(c.Request.Body, directModelPolicyBodyLimit+1))
+	c.Request.Body = io.NopCloser(bytes.NewReader(body))
+	return body
+}
+
+// directRequestedModel resolves the model a realtime/live request targets and
+// restores the body so the downstream handler still reads it in full.
+func (s *Server) directRequestedModel(c *gin.Context, defaultModel string) (string, bool) {
+	if model := strings.TrimSpace(c.Query("model")); model != "" {
+		return model, true
+	}
+	if c.Request == nil || c.Request.Body == nil || c.Request.Method == http.MethodGet {
+		return defaultModel, true
+	}
+	body, errRead := io.ReadAll(io.LimitReader(c.Request.Body, directModelPolicyBodyLimit+1))
+	if errRead != nil {
+		return "", false
+	}
+	if len(body) > directModelPolicyBodyLimit {
+		// Oversized bodies are rejected by the downstream handler. Replay the
+		// prefix plus the untouched remainder so that check still runs.
+		c.Request.Body = io.NopCloser(io.MultiReader(bytes.NewReader(body), c.Request.Body))
+		return defaultModel, true
+	}
+	c.Request.Body = io.NopCloser(bytes.NewReader(body))
+	if len(bytes.TrimSpace(body)) == 0 || !gjson.ValidBytes(body) {
+		return defaultModel, true
+	}
+	for _, path := range []string{"model", "session.model"} {
+		if model := strings.TrimSpace(gjson.GetBytes(body, path).String()); model != "" {
+			return model, true
+		}
+	}
+	return defaultModel, true
 }
 
 var corsExposedResponseHeadersJoined = strings.Join(corsExposedResponseHeaders, ", ")

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"net/http"
 	"os"
@@ -242,6 +243,14 @@ func (s *Server) pluginManagementNoRoute(c *gin.Context) {
 		return
 	}
 	path := c.Request.URL.Path
+	if strings.HasPrefix(path, "/v0/control-plane") {
+		if s.pluginHost != nil && s.pluginHost.ServePublicAPIHTTP(c.Writer, c.Request) {
+			c.Abort()
+			return
+		}
+		c.AbortWithStatus(http.StatusNotFound)
+		return
+	}
 	if strings.HasPrefix(path, "/v0/resource/plugins/") {
 		s.pluginResourceNoRoute(c)
 		return
@@ -317,5 +326,32 @@ func (s *Server) serveManagementControlPanel(c *gin.Context) {
 		}
 	}
 
+	if s.pluginHost != nil && s.pluginHost.PublicRouteServed(http.MethodGet, publicControlPlaneUIPath) {
+		// A plugin owns the control-plane UI script. Inject it into the panel
+		// exactly like the native control plane did, without replacing anything.
+		page, errRead := os.ReadFile(filePath)
+		if errRead != nil {
+			log.WithError(errRead).Error("failed to read management control panel asset")
+			c.AbortWithStatus(http.StatusInternalServerError)
+			return
+		}
+		page = injectControlPlaneUI(page)
+		c.Data(http.StatusOK, "text/html; charset=utf-8", page)
+		return
+	}
 	c.File(filePath)
+}
+
+const publicControlPlaneUIPath = "/v0/control-plane/ui.js"
+
+func injectControlPlaneUI(page []byte) []byte {
+	injection := []byte(`<script src="` + publicControlPlaneUIPath + `" defer></script>`)
+	if bytes.Contains(page, injection) {
+		return page
+	}
+	lower := bytes.ToLower(page)
+	if index := bytes.LastIndex(lower, []byte("</body>")); index >= 0 {
+		return append(append(append([]byte(nil), page[:index]...), injection...), page[index:]...)
+	}
+	return append(append([]byte(nil), page...), injection...)
 }
