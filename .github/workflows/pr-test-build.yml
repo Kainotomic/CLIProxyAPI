@@ -2,7 +2,8 @@ name: pr-test-build
 
 on:
   pull_request:
-    branches: [main]
+    # PRs opened against main are automatically retargeted to dev by this repo.
+    branches: [main, dev]
 
 permissions:
   contents: read
