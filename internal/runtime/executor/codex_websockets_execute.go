@@ -180,7 +180,7 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 			}
 			logCodexWebsocketDisconnected(executionSessionID, authID, wsURL, reason, err)
 			if errClose := closer.Close(); errClose != nil {
-				log.Errorf("codex websockets executor: close websocket error: %v", errClose)
+				log.Errorf("codex websockets executor: close websocket error")
 			}
 		}()
 	}

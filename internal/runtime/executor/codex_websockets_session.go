@@ -318,7 +318,7 @@ func closeWebsocketAfterBindFailure(sess *codexWebsocketSession, conn *websocket
 		sess.detachConnection(conn, nil)
 	}
 	if errClose := closer.Close(); errClose != nil {
-		log.Errorf("websockets executor: close lifecycle bind failure connection error: %v", errClose)
+		log.Errorf("websockets executor: close lifecycle bind failure connection error")
 	}
 }
 
@@ -491,7 +491,7 @@ func (e *CodexWebsocketsExecutor) ensureUpstreamConn(ctx context.Context, auth *
 		logCodexWebsocketDisconnected(sess.sessionID, staleAuthID, staleWSURL, "target_changed", nil)
 		if staleCloser != nil {
 			if errClose := staleCloser.Close(); errClose != nil {
-				log.Errorf("codex websockets executor: close stale websocket error: %v", errClose)
+				log.Errorf("codex websockets executor: close stale websocket error")
 			}
 		}
 		if staleLifecycle != nil {
@@ -526,7 +526,7 @@ func (e *CodexWebsocketsExecutor) ensureUpstreamConn(ctx context.Context, auth *
 		previousCloser := sess.connCloser
 		sess.connMu.Unlock()
 		if errClose := closer.Close(); errClose != nil {
-			log.Errorf("codex websockets executor: close websocket error: %v", errClose)
+			log.Errorf("codex websockets executor: close websocket error")
 		}
 		return previous, previousCloser, nil, nil
 	}
@@ -642,7 +642,7 @@ func (e *CodexWebsocketsExecutor) invalidateUpstreamConnWithNotify(sess *codexWe
 	}
 	if closer != nil {
 		if errClose := closer.Close(); errClose != nil {
-			log.Errorf("codex websockets executor: close websocket error: %v", errClose)
+			log.Errorf("codex websockets executor: close websocket error")
 		}
 	}
 	if lifecycle != nil {
@@ -733,7 +733,7 @@ func closeCodexWebsocketSession(sess *codexWebsocketSession, reason string) {
 		logCodexWebsocketDisconnected(sessionID, authID, wsURL, reason, nil)
 		if closer != nil {
 			if errClose := closer.Close(); errClose != nil {
-				log.Errorf("codex websockets executor: close websocket error: %v", errClose)
+				log.Errorf("codex websockets executor: close websocket error")
 			}
 		}
 	}
@@ -742,16 +742,22 @@ func closeCodexWebsocketSession(sess *codexWebsocketSession, reason string) {
 	}
 }
 
+func logCodexWebsocketStreamStart(model string) {
+	log.Debugf("Executing Codex Websockets stream request model=%s", strings.TrimSpace(model))
+}
+
 func logCodexWebsocketConnected(sessionID string, authID string, wsURL string) {
-	log.Infof("codex websockets: upstream connected session=%s auth=%s url=%s", strings.TrimSpace(sessionID), strings.TrimSpace(authID), strings.TrimSpace(wsURL))
+	_, _, _ = sessionID, authID, wsURL
+	log.Infof("codex websockets: upstream connected")
 }
 
 func logCodexWebsocketDisconnected(sessionID string, authID string, wsURL string, reason string, err error) {
+	_, _, _, _ = sessionID, authID, wsURL, reason
 	if err != nil {
-		log.Infof("codex websockets: upstream disconnected session=%s auth=%s url=%s reason=%s err=%v", strings.TrimSpace(sessionID), strings.TrimSpace(authID), strings.TrimSpace(wsURL), strings.TrimSpace(reason), err)
+		log.Infof("codex websockets: upstream disconnected status=error")
 		return
 	}
-	log.Infof("codex websockets: upstream disconnected session=%s auth=%s url=%s reason=%s", strings.TrimSpace(sessionID), strings.TrimSpace(authID), strings.TrimSpace(wsURL), strings.TrimSpace(reason))
+	log.Infof("codex websockets: upstream disconnected status=ok")
 }
 
 // CloseCodexWebsocketSessionsForAuthID closes all active Codex upstream websocket sessions
