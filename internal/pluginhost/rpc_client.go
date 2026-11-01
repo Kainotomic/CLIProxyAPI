@@ -25,7 +25,9 @@ type rpcPluginAdapter struct {
 
 type rpcAuthProvider struct {
 	*rpcPluginAdapter
-	identifier string
+	identifier          string
+	identifiers         []string
+	credentialProviders []string
 }
 
 type rpcFrontendAuthProvider struct {
@@ -86,6 +88,15 @@ type rpcResponseNormalizer struct {
 	method string
 }
 
+type rpcRequestBodyPatcher struct {
+	*rpcPluginAdapter
+	method string
+}
+
+func (p rpcRequestBodyPatcher) PatchRequestBody(ctx context.Context, body []byte) (pluginapi.RequestBodyPatchResponse, error) {
+	return callPluginRaw[pluginapi.RequestBodyPatchResponse](ctx, p.client, p.method, body)
+}
+
 func registerRPCPlugin(ctx context.Context, host *Host, id string, client pluginClient, method string, configYAML []byte) (pluginapi.Plugin, error) {
 	if client == nil {
 		return pluginapi.Plugin{}, fmt.Errorf("plugin client is nil")
@@ -126,17 +137,22 @@ func registerRPCPlugin(ctx context.Context, host *Host, id string, client plugin
 		if err := ctx.Err(); err != nil {
 			return pluginapi.Plugin{}, err
 		}
-		identifier := callPluginIdentifier(ctx, adapter.client, pluginabi.MethodAuthIdentifier)
+		identifier, identifiers, credentialProviders := callPluginAuthIdentifiers(ctx, adapter.client)
 		if err := ctx.Err(); err != nil {
 			return pluginapi.Plugin{}, err
 		}
 		plugin.Capabilities.AuthProvider = rpcAuthProvider{
-			rpcPluginAdapter: adapter,
-			identifier:       identifier,
+			rpcPluginAdapter:    adapter,
+			identifier:          identifier,
+			identifiers:         identifiers,
+			credentialProviders: credentialProviders,
 		}
 	}
 	if resp.Capabilities.FrontendAuthProvider {
+		omitBody := resp.Capabilities.FrontendAuthProviderOmitBody || resp.Capabilities.FrontendAuthOmitBody
 		plugin.Capabilities.FrontendAuthProvider = rpcFrontendAuthProvider{rpcPluginAdapter: adapter}
+		plugin.Capabilities.FrontendAuthProviderOmitBody = omitBody
+		plugin.Capabilities.FrontendAuthOmitBody = omitBody
 	}
 	if resp.Capabilities.Scheduler {
 		plugin.Capabilities.Scheduler = adapter
@@ -158,6 +174,22 @@ func registerRPCPlugin(ctx context.Context, host *Host, id string, client plugin
 		plugin.Capabilities.RequestInterceptor = adapter
 		plugin.Capabilities.RequestInterceptorOmitBodyBefore = resp.Capabilities.RequestInterceptorOmitBodyBefore
 		plugin.Capabilities.RequestInterceptorOmitBodyAfter = resp.Capabilities.RequestInterceptorOmitBodyAfter
+	}
+	if schemaVersion >= pluginabi.SchemaVersionRequestInterceptorBodyPatch {
+		if resp.Capabilities.RequestBodyPatcherBefore || resp.Capabilities.RequestInterceptorPatchBodyBefore {
+			plugin.Capabilities.RequestBodyPatcherBefore = rpcRequestBodyPatcher{
+				rpcPluginAdapter: adapter,
+				method:           pluginabi.MethodRequestPatchBodyBefore,
+			}
+			plugin.Capabilities.RequestInterceptorPatchBodyBefore = true
+		}
+		if resp.Capabilities.RequestBodyPatcherAfter || resp.Capabilities.RequestInterceptorPatchBodyAfter {
+			plugin.Capabilities.RequestBodyPatcherAfter = rpcRequestBodyPatcher{
+				rpcPluginAdapter: adapter,
+				method:           pluginabi.MethodRequestPatchBodyAfter,
+			}
+			plugin.Capabilities.RequestInterceptorPatchBodyAfter = true
+		}
 	}
 	if resp.Capabilities.RequestLifecyclePlugin {
 		plugin.Capabilities.RequestLifecyclePlugin = adapter
@@ -214,6 +246,11 @@ func callPlugin[T any](ctx context.Context, client pluginClient, method string, 
 	if errMarshal != nil {
 		return zero, fmt.Errorf("marshal plugin request %s: %w", method, errMarshal)
 	}
+	return callPluginRaw[T](ctx, client, method, rawRequest)
+}
+
+func callPluginRaw[T any](ctx context.Context, client pluginClient, method string, rawRequest []byte) (T, error) {
+	var zero T
 	rawResp, errCall := client.Call(ctx, method, rawRequest)
 	if errCall != nil {
 		return zero, errCall
@@ -470,8 +507,48 @@ func callPluginIdentifier(ctx context.Context, client pluginClient, method strin
 	return strings.TrimSpace(resp.Identifier)
 }
 
+func callPluginAuthIdentifiers(ctx context.Context, client pluginClient) (string, []string, []string) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	resp, errCall := callPlugin[rpcIdentifierResponse](ctx, client, pluginabi.MethodAuthIdentifier, rpcEmptyResponse{})
+	if errCall != nil {
+		return "", nil, nil
+	}
+	primary := strings.TrimSpace(resp.Identifier)
+	identifiers := make([]string, 0, 1+len(resp.Identifiers))
+	if primary != "" {
+		identifiers = append(identifiers, primary)
+	}
+	for _, item := range resp.Identifiers {
+		trimmed := strings.TrimSpace(item)
+		if trimmed == "" {
+			continue
+		}
+		if primary == "" {
+			primary = trimmed
+		}
+		identifiers = append(identifiers, trimmed)
+	}
+	credentialProviders := make([]string, 0, len(resp.CredentialProviders))
+	for _, item := range resp.CredentialProviders {
+		if trimmed := strings.TrimSpace(item); trimmed != "" {
+			credentialProviders = append(credentialProviders, trimmed)
+		}
+	}
+	return primary, identifiers, credentialProviders
+}
+
 func (a rpcAuthProvider) Identifier() string {
 	return a.identifier
+}
+
+func (a rpcAuthProvider) Identifiers() []string {
+	return append([]string(nil), a.identifiers...)
+}
+
+func (a rpcAuthProvider) CredentialProviders() []string {
+	return append([]string(nil), a.credentialProviders...)
 }
 
 func (a rpcFrontendAuthProvider) Identifier() string {
