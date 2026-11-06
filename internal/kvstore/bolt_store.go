@@ -20,14 +20,16 @@ import (
 )
 
 const (
-	envelopeVersionV1      byte = 0x01
-	envelopeHeaderSize          = 9
-	defaultSweepInterval        = 5 * time.Minute
-	defaultSweepBatchSize       = 256
-	defaultBoltOpenTimeout      = 5 * time.Second
+	envelopeVersionV1     byte = 0x01
+	envelopeHeaderSize         = 9
+	defaultSweepInterval       = 5 * time.Minute
+	defaultSweepBatchSize      = 256
 )
 
 var (
+	// boltOpenTimeout bounds how long OpenBoltStore waits for the bbolt file lock.
+	boltOpenTimeout = 5 * time.Second
+
 	boltKVBucket   = []byte("cpa_kv")
 	errStoreClosed = errors.New("kvstore: bolt store is not open")
 
@@ -110,7 +112,7 @@ func OpenBoltStore(path string, opts ...BoltStoreOption) (*BoltStore, error) {
 	if errMkdir := os.MkdirAll(filepath.Dir(resolvedPath), 0o755); errMkdir != nil {
 		return nil, fmt.Errorf("kvstore: create parent directory: %w", errMkdir)
 	}
-	db, errOpen := bbolt.Open(resolvedPath, 0o600, &bbolt.Options{Timeout: defaultBoltOpenTimeout})
+	db, errOpen := bbolt.Open(resolvedPath, 0o600, &bbolt.Options{Timeout: boltOpenTimeout})
 	if errOpen != nil {
 		return nil, fmt.Errorf("kvstore: open bolt db: %w", errOpen)
 	}
