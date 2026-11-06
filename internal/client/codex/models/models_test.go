@@ -132,6 +132,16 @@ func TestCodexClientModelsResponse_InputModalitiesFromRegistry(t *testing.T) {
 	}
 }
 
+// Every xAI builtin is an image, video or speech model, so none may appear in
+// the Codex chat picker.
+func TestCodexClientHidesEveryXAIBuiltin(t *testing.T) {
+	for _, model := range registry.WithXAIBuiltins(nil) {
+		if !isCodexClientImageOrVideoModel(model.ID) {
+			t.Fatalf("xAI builtin %s should be hidden from the Codex chat catalog", model.ID)
+		}
+	}
+}
+
 func TestCodexClientHidesSpeechModels(t *testing.T) {
 	for _, id := range []string{"grok-tts", "grok-voice-tts-1.0", "xai/grok-tts"} {
 		if !isCodexClientImageOrVideoModel(id) {
