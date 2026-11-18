@@ -104,6 +104,53 @@ func TestV8ExampleLoadsAndRoundTrips(t *testing.T) {
 	}
 }
 
+func TestV8ShutdownTimeoutParse(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		raw  string
+		want int
+	}{
+		{"v8 nested", "server:\n  shutdown-timeout: 15\n", 15},
+		{"legacy top-level", "shutdown-timeout: 7\n", 7},
+		{"absent defaults to zero", "server:\n  port: 8317\n", 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, err := ParseConfigBytes([]byte(tc.raw))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cfg.ShutdownTimeoutSeconds != tc.want {
+				t.Fatalf("ShutdownTimeoutSeconds = %d, want %d", cfg.ShutdownTimeoutSeconds, tc.want)
+			}
+		})
+	}
+}
+
+func TestV8WebsocketTunnelParse(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		raw  string
+		want bool
+	}{
+		{"v8 nested", "config-version: 8\nserver:\n  websocket-tunnel: true\n", true},
+		{"legacy top-level", "websocket-tunnel: true\n", true},
+		{"absent defaults to off", "config-version: 8\nserver:\n  port: 8317\n", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, err := ParseConfigBytes([]byte(tc.raw))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cfg.WebsocketTunnel != tc.want {
+				t.Fatalf("WebsocketTunnel = %t, want %t", cfg.WebsocketTunnel, tc.want)
+			}
+		})
+	}
+	if err := ValidateV8Config([]byte("config-version: 8\nserver:\n  websocket-tunnel: true\n")); err != nil {
+		t.Fatalf("ValidateV8Config(server.websocket-tunnel) error = %v", err)
+	}
+}
+
 func TestV8PresencePrecedenceAndCleanup(t *testing.T) {
 	for _, tc := range []struct {
 		name, raw string
@@ -931,5 +978,35 @@ func TestV8SecretHashResolvesReferences(t *testing.T) {
 				t.Fatalf("second load changed the persisted hash or settings: %v", err)
 			}
 		})
+	}
+}
+
+func TestV8ExampleDocumentsSessionAffinityCompactionGuidance(t *testing.T) {
+	example, errRead := os.ReadFile(filepath.Join("..", "..", "config.example.yaml"))
+	if errRead != nil {
+		t.Fatal(errRead)
+	}
+	var doc yaml.Node
+	if errUnmarshal := yaml.Unmarshal(example, &doc); errUnmarshal != nil {
+		t.Fatal(errUnmarshal)
+	}
+	routing := yamlPath(doc.Content[0], "routing")
+	if routing == nil {
+		t.Fatal("config.example.yaml is missing routing block")
+	}
+	idx := findMapKeyIndex(routing, "session-affinity")
+	if idx < 0 {
+		t.Fatal("config.example.yaml is missing routing.session-affinity")
+	}
+	comment := routing.Content[idx].HeadComment
+	for _, required := range []string{
+		"Merkle LCP prefix/compaction matching",
+		"2 shared trailing turns",
+		"replaces all earlier turns with a summary",
+		"send X-Session-ID",
+	} {
+		if !strings.Contains(comment, required) {
+			t.Fatalf("routing.session-affinity comment in config.example.yaml is missing %q; got:\n%s", required, comment)
+		}
 	}
 }
