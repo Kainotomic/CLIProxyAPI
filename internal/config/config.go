@@ -133,6 +133,10 @@ type Config struct {
 	// WebsocketAuth enables or disables authentication for the WebSocket API.
 	WebsocketAuth bool `yaml:"ws-auth" json:"ws-auth"`
 
+	// WebsocketTunnel enables the /v1/tunnel WebSocket relay. Off by default (fork patch):
+	// while false the route answers 404 for every method and the relay accepts no API key.
+	WebsocketTunnel bool `yaml:"websocket-tunnel" json:"websocket-tunnel"`
+
 	// AntigravitySignatureCacheEnabled controls whether signature cache validation is enabled for thinking blocks.
 	// When true (default), cached signatures are preferred and validated.
 	// When false, client signatures are used directly after normalization (bypass mode).

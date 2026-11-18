@@ -2,6 +2,8 @@
 
 CLIProxyAPI provides a built-in, multi-tenant, many-to-many **WebSocket Tunnel** (`GET /v1/tunnel`) that relays opaque packets between authenticated **Client** and **Server** devices. CLIProxyAPI acts strictly as a zero-inspection packet switch: it enforces `access.api-keys` tenant isolation, tracks online device topology, verifies sender identity headers, and forwards payloads without inspecting or mutating business content.
 
+> **Kainotomic fork: off by default.** The tunnel runs only with `server.websocket-tunnel: true` in `config.yaml` (flat layout: `websocket-tunnel: true`). While it is false, `/v1/tunnel` answers `404` for every method and no `access.api-keys` entry can open a tunnel; switching it to false on a hot reload disconnects every open tunnel peer.
+
 ---
 
 ## 1. Architecture & Core Guarantees

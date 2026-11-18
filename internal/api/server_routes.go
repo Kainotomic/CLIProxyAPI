@@ -627,6 +627,10 @@ func (s *Server) AttachWebsocketRoute(path string, handler http.Handler) {
 }
 
 func (s *Server) handleWebsocketTunnel(c *gin.Context) {
+	if cfg := s.getConfig(); cfg == nil || !cfg.WebsocketTunnel {
+		c.AbortWithStatusJSON(http.StatusNotFound, gin.H{"error": "not found"})
+		return
+	}
 	if s == nil || s.tunnelHub == nil {
 		c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{"error": "tunnel hub unavailable"})
 		return

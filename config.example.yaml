@@ -74,6 +74,10 @@ server:
   # When true, disable high-overhead request logging and HTTP middleware features to reduce per-request memory usage under high concurrency.
   commercial-mode: false
 
+  # Enable the /v1/tunnel WebSocket relay (docs/websocket-tunnel.md). Default false (fork patch):
+  # while false the route answers 404 for every method and no API key can open a tunnel.
+  websocket-tunnel: false
+
   # Enable local network mDNS / DNS-SD service discovery (RFC 6762 / RFC 6763).
   # When enabled, broadcasts _ai-gateway._tcp with API protocol subtypes on the local network.
   # TXT records follow draft-su-ai-gateway-discovery-00:

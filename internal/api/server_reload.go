@@ -28,7 +28,11 @@ func (s *Server) applyAccessConfig(oldCfg, newCfg *config.Config) bool {
 		return false
 	}
 	if s.tunnelHub != nil {
-		s.tunnelHub.UpdateAllowedAPIKeys(newCfg.APIKeys)
+		var tunnelKeys []string
+		if newCfg.WebsocketTunnel {
+			tunnelKeys = newCfg.APIKeys
+		}
+		s.tunnelHub.UpdateAllowedAPIKeys(tunnelKeys)
 	}
 	if s.accessManager == nil {
 		return false

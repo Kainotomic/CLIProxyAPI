@@ -121,6 +121,7 @@ func readServerTunnelBinary(t *testing.T, conn *websocket.Conn) wstunnel.DataFra
 
 func TestServerWebsocketTunnel_EndToEndAndTenantIsolation(t *testing.T) {
 	cfg := &config.Config{
+		WebsocketTunnel: true,
 		SDKConfig: config.SDKConfig{
 			APIKeys: []string{"tenant-a", "tenant-b"},
 		},
@@ -205,6 +206,7 @@ func TestServerWebsocketTunnel_EndToEndAndTenantIsolation(t *testing.T) {
 
 func TestServerWebsocketTunnel_NonGetMethodsReturn405AndPreserveCORSOptions(t *testing.T) {
 	cfg := &config.Config{
+		WebsocketTunnel: true,
 		SDKConfig: config.SDKConfig{
 			APIKeys: []string{"method-key"},
 		},
@@ -260,7 +262,7 @@ func TestServerWebsocketTunnel_NonGetMethodsReturn405AndPreserveCORSOptions(t *t
 
 func TestServerWebsocketTunnel_RejectsWhenAPIKeysEmptyOrSafeMode(t *testing.T) {
 	t.Run("empty access.api-keys rejects tunnel upgrade with 401", func(t *testing.T) {
-		apiSrv := newTestTunnelAPIServer(t, &config.Config{})
+		apiSrv := newTestTunnelAPIServer(t, &config.Config{WebsocketTunnel: true})
 		t.Cleanup(func() {
 			_ = apiSrv.Stop(context.Background())
 		})
@@ -283,6 +285,7 @@ func TestServerWebsocketTunnel_RejectsWhenAPIKeysEmptyOrSafeMode(t *testing.T) {
 
 	t.Run("example api-key safe mode blocks /v1/tunnel with 403", func(t *testing.T) {
 		cfg := &config.Config{
+			WebsocketTunnel: true,
 			SDKConfig: config.SDKConfig{
 				APIKeys: []string{"your-api-key-1"},
 			},
@@ -327,8 +330,9 @@ func TestServerWebsocketTunnel_ServiceUnavailableResponseBodies(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := &config.Config{
-				SDKConfig: config.SDKConfig{APIKeys: []string{"key"}},
-				Home:      config.HomeConfig{Enabled: tc.homeEnabled},
+				WebsocketTunnel: true,
+				SDKConfig:       config.SDKConfig{APIKeys: []string{"key"}},
+				Home:            config.HomeConfig{Enabled: tc.homeEnabled},
 			}
 			apiSrv := newTestTunnelAPIServer(t, cfg)
 			t.Cleanup(func() {
@@ -355,6 +359,7 @@ func TestServerWebsocketTunnel_ServiceUnavailableResponseBodies(t *testing.T) {
 
 func TestServerWebsocketTunnel_HotReloadRevokesRemovedKeyOnly(t *testing.T) {
 	cfg := &config.Config{
+		WebsocketTunnel: true,
 		SDKConfig: config.SDKConfig{
 			APIKeys: []string{"key-keep", "key-revoke"},
 		},
@@ -374,6 +379,7 @@ func TestServerWebsocketTunnel_HotReloadRevokesRemovedKeyOnly(t *testing.T) {
 	_ = readServerTunnelJSON(t, cliRevoke)
 
 	updatedCfg := &config.Config{
+		WebsocketTunnel: true,
 		SDKConfig: config.SDKConfig{
 			APIKeys: []string{"key-keep"},
 		},
@@ -396,6 +402,92 @@ func TestServerWebsocketTunnel_HotReloadRevokesRemovedKeyOnly(t *testing.T) {
 	}
 }
 
+func TestServerWebsocketTunnel_DisabledByDefaultRefusesEveryMethod(t *testing.T) {
+	cfg := &config.Config{
+		SDKConfig: config.SDKConfig{APIKeys: []string{"live-key"}},
+	}
+	apiSrv := newTestTunnelAPIServer(t, cfg)
+	t.Cleanup(func() {
+		_ = apiSrv.Stop(context.Background())
+	})
+	httpSrv := httptest.NewServer(apiSrv.Handler())
+	t.Cleanup(httpSrv.Close)
+
+	wsURL := "ws" + strings.TrimPrefix(httpSrv.URL, "http") + "/v1/tunnel?key=live-key&role=client&uuid=c1&name=Client1"
+	conn, resp, errDial := websocket.DefaultDialer.Dial(wsURL, http.Header{"Origin": {"https://evil.example"}})
+	if conn != nil {
+		_ = conn.Close()
+		t.Fatal("tunnel upgrade succeeded with websocket-tunnel unset, want refusal")
+	}
+	if resp != nil && resp.Body != nil {
+		if errClose := resp.Body.Close(); errClose != nil {
+			t.Logf("response body close error: %v", errClose)
+		}
+	}
+	if errDial == nil || resp == nil || resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("Dial with websocket-tunnel unset = (%v, %v), want 404", resp, errDial)
+	}
+
+	for _, method := range []string{http.MethodGet, http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete, http.MethodHead, http.MethodTrace, http.MethodConnect} {
+		req, errReq := http.NewRequest(method, httpSrv.URL+"/v1/tunnel?key=live-key", nil)
+		if errReq != nil {
+			t.Fatalf("NewRequest(%s) error = %v", method, errReq)
+		}
+		req.Header.Set("Authorization", "Bearer live-key")
+		res, errDo := http.DefaultClient.Do(req)
+		if errDo != nil {
+			t.Fatalf("Do(%s) error = %v", method, errDo)
+		}
+		if errClose := res.Body.Close(); errClose != nil {
+			t.Logf("response body close error: %v", errClose)
+		}
+		if res.StatusCode != http.StatusNotFound {
+			t.Fatalf("%s /v1/tunnel with websocket-tunnel unset = %d, want 404", method, res.StatusCode)
+		}
+	}
+}
+
+func TestServerWebsocketTunnel_HotReloadDisableClosesPeersAndRefuses(t *testing.T) {
+	cfg := &config.Config{
+		WebsocketTunnel: true,
+		SDKConfig:       config.SDKConfig{APIKeys: []string{"live-key"}},
+	}
+	apiSrv := newTestTunnelAPIServer(t, cfg)
+	t.Cleanup(func() {
+		_ = apiSrv.Stop(context.Background())
+	})
+	httpSrv := httptest.NewServer(apiSrv.Handler())
+	t.Cleanup(httpSrv.Close)
+
+	cli := dialServerTunnel(t, httpSrv.URL, "live-key", wstunnel.RoleClient, "c-live", "Live Client")
+	_ = readServerTunnelJSON(t, cli)
+
+	apiSrv.UpdateClients(&config.Config{
+		SDKConfig: config.SDKConfig{APIKeys: []string{"live-key"}},
+	})
+
+	_, _, errRead := readServerTunnelTestMessage(cli)
+	var closeErr *websocket.CloseError
+	if !errors.As(errRead, &closeErr) || closeErr.Code != websocket.ClosePolicyViolation {
+		t.Fatalf("expected open tunnel to close with 1008 after disabling, got %v", errRead)
+	}
+
+	wsURL := "ws" + strings.TrimPrefix(httpSrv.URL, "http") + "/v1/tunnel?role=client&uuid=c-again&name=Again"
+	conn, resp, errDial := websocket.DefaultDialer.Dial(wsURL, http.Header{"Authorization": {"Bearer live-key"}})
+	if conn != nil {
+		_ = conn.Close()
+		t.Fatal("tunnel upgrade succeeded after websocket-tunnel was switched off")
+	}
+	if resp != nil && resp.Body != nil {
+		if errClose := resp.Body.Close(); errClose != nil {
+			t.Logf("response body close error: %v", errClose)
+		}
+	}
+	if errDial == nil || resp == nil || resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("Dial after disabling = (%v, %v), want 404", resp, errDial)
+	}
+}
+
 func TestServerWebsocketTunnel_ServerStopClosesConnections(t *testing.T) {
 	ln, errListen := net.Listen("tcp", "127.0.0.1:0")
 	if errListen != nil {
@@ -407,8 +499,9 @@ func TestServerWebsocketTunnel_ServerStopClosesConnections(t *testing.T) {
 	}
 
 	cfg := &config.Config{
-		Host: "127.0.0.1",
-		Port: port,
+		WebsocketTunnel: true,
+		Host:            "127.0.0.1",
+		Port:            port,
 		SDKConfig: config.SDKConfig{
 			APIKeys: []string{"stop-key"},
 		},

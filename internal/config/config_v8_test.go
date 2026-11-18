@@ -126,6 +126,31 @@ func TestV8ShutdownTimeoutParse(t *testing.T) {
 	}
 }
 
+func TestV8WebsocketTunnelParse(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		raw  string
+		want bool
+	}{
+		{"v8 nested", "config-version: 8\nserver:\n  websocket-tunnel: true\n", true},
+		{"legacy top-level", "websocket-tunnel: true\n", true},
+		{"absent defaults to off", "config-version: 8\nserver:\n  port: 8317\n", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, err := ParseConfigBytes([]byte(tc.raw))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cfg.WebsocketTunnel != tc.want {
+				t.Fatalf("WebsocketTunnel = %t, want %t", cfg.WebsocketTunnel, tc.want)
+			}
+		})
+	}
+	if err := ValidateV8Config([]byte("config-version: 8\nserver:\n  websocket-tunnel: true\n")); err != nil {
+		t.Fatalf("ValidateV8Config(server.websocket-tunnel) error = %v", err)
+	}
+}
+
 func TestV8PresencePrecedenceAndCleanup(t *testing.T) {
 	for _, tc := range []struct {
 		name, raw string

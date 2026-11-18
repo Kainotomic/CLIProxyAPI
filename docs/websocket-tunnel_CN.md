@@ -2,6 +2,8 @@
 
 CLIProxyAPI 内置支持多租户隔离、多对多全双工复用的 **WebSocket Tunnel**（`GET /v1/tunnel`），用于在已认证的**客户端（Client）**与**服务端（Server）**设备之间透明交换任意数据包。CLIProxyAPI 自身不解析、不修改任何业务载荷内容，仅负责基于 `access.api-keys` 的租户隔离、在线设备发现、源身份防伪造校验以及高速数据包路由转发。
 
+> **Kainotomic fork：默认关闭。** 只有在 `config.yaml` 中设置 `server.websocket-tunnel: true`（旧版平铺布局：`websocket-tunnel: true`）时才会启用隧道。为 false 时，`/v1/tunnel` 对所有方法返回 `404`，任何 `access.api-keys` 都无法建立隧道；热重载将其改为 false 会断开所有已连接的隧道设备。
+
 ---
 
 ## 1. 架构模型与核心约束

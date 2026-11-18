@@ -116,7 +116,8 @@ func TestServerWebsocketTunnel_TLSWithoutALPNClosesRawTransport(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			apiSrv := newTestTunnelAPIServer(t, &config.Config{
-				SDKConfig: config.SDKConfig{APIKeys: []string{"key"}},
+				WebsocketTunnel: true,
+				SDKConfig:       config.SDKConfig{APIKeys: []string{"key"}},
 			})
 			baseListener, errListen := net.Listen("tcp", "127.0.0.1:0")
 			if errListen != nil {
